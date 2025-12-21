@@ -35,11 +35,50 @@ class FormFiller {
       const formElements = this.findFormElements();
       printLog(`Found ${formElements.length} form elements to fill`);
 
-      // Fill each element
-      for (const formElement of formElements) {
-        await this.fillElement(formElement);
-        // Small delay between fills
-        await this.delay(500);
+      if (formElements.length === 0) {
+        printLog("No form elements found to fill");
+        return;
+      }
+
+      // Check if batch mode is enabled (default: true)
+      const settings = await this.getSettings();
+      const batchModeEnabled = settings.batch_mode !== false;
+
+      if (batchModeEnabled) {
+        // BATCH MODE: Get all answers in a single LLM call
+        printLog("Using BATCH mode (faster)");
+        const userInfo = personals.user_information_all || JSON.stringify(personals);
+        const questionsList = formElements.map(el => ({
+          question: el.question || 'Form field',
+          options: el.options,
+          questionType: this.determineQuestionType(el.type, el.options)
+        }));
+
+        printLog(`Getting batch answers for ${questionsList.length} questions...`);
+        const batchAnswers = await llmManager.getBatchAnswers(
+          questionsList,
+          undefined,
+          userInfo,
+          JSON.stringify(personals)
+        );
+        printLog(`Got ${batchAnswers.size} batch answers`);
+
+        // Fill elements using cached answers (parallel with no LLM wait)
+        await Promise.all(formElements.map(async (formElement) => {
+          try {
+            const cachedAnswer = batchAnswers.get(formElement.question || 'Form field');
+            await this.fillElementWithAnswer(formElement, cachedAnswer);
+          } catch (error) {
+            printLog(`Error filling element: ${error}`);
+          }
+        }));
+      } else {
+        // SEQUENTIAL MODE: One LLM call per field (more accurate)
+        printLog("Using SEQUENTIAL mode (more accurate)");
+        for (const formElement of formElements) {
+          await this.fillElement(formElement);
+          await this.delay(100); // Small delay between fills
+        }
       }
 
       printLog(`Form filling complete! Filled ${this.filledCount} elements.`);
@@ -345,6 +384,52 @@ class FormFiller {
       this.filledCount++;
 
       printLog(`✓ Filled: ${question} with: ${answer}`);
+    } catch (error) {
+      printLog(`Error filling element: ${error}`);
+    }
+  }
+
+  // Optimized version that uses pre-cached answer
+  private async fillElementWithAnswer(formElement: FormElement, cachedAnswer?: string): Promise<void> {
+    try {
+      const { element, type, question, options } = formElement;
+
+      let answer = cachedAnswer;
+
+      // Fall back to individual LLM call if no cached answer
+      if (!answer) {
+        const input = element as HTMLInputElement;
+        let enhancedQuestion = question || 'Form field';
+
+        if (type === 'date' || type === 'text') {
+          const placeholder = input.getAttribute('placeholder') || '';
+          if (placeholder && (placeholder.toUpperCase().includes('MM') || placeholder.toUpperCase().includes('DD'))) {
+            enhancedQuestion = `${enhancedQuestion} (format: ${placeholder})`;
+          }
+        }
+
+        const userInfo = personals.user_information_all || JSON.stringify(personals);
+        const llmAnswer = await llmManager.getAnswer(
+          enhancedQuestion,
+          options,
+          this.determineQuestionType(type, options),
+          undefined,
+          userInfo,
+          JSON.stringify(personals)
+        );
+        answer = llmAnswer || undefined;
+      }
+
+      if (!answer) {
+        printLog(`No answer for: ${question}`);
+        return;
+      }
+
+      // Fill the element based on type
+      await this.setElementValue(element, type, answer, options);
+      this.filledCount++;
+
+      printLog(`✓ Filled: ${question} with: ${answer.substring(0, 50)}`);
     } catch (error) {
       printLog(`Error filling element: ${error}`);
     }
@@ -825,6 +910,13 @@ class FormFiller {
     return null;
   }
 
+  private async getSettings(): Promise<any> {
+    return new Promise((resolve) => {
+      chrome.storage.sync.get(['settings'], (result) => {
+        resolve(result.settings || {});
+      });
+    });
+  }
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }

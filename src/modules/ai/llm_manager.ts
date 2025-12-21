@@ -161,6 +161,89 @@ export class LLMManager {
     return null;
   }
 
+  // Batch answer multiple questions in a single LLM call for speed
+  async getBatchAnswers(
+    questionsList: { question: string; options?: string[]; questionType?: string }[],
+    jobDescription?: string,
+    userInformationAll?: string,
+    configContext?: string
+  ): Promise<Map<string, string>> {
+    const results = new Map<string, string>();
+
+    if (questionsList.length === 0) return results;
+
+    // Build a combined prompt for all questions
+    const userInfo = userInformationAll || configContext || JSON.stringify(personals);
+
+    let batchPrompt = `You are a helpful assistant filling out a form. Answer each question based on this user information:
+
+${userInfo}
+
+Please answer ALL of the following questions. Format your response as:
+Q1: [your answer]
+Q2: [your answer]
+...and so on.
+
+Questions:
+`;
+
+    questionsList.forEach((q, idx) => {
+      batchPrompt += `\nQ${idx + 1}: ${q.question}`;
+      if (q.options && q.options.length > 0) {
+        batchPrompt += ` (Options: ${q.options.join(', ')})`;
+      }
+    });
+
+    batchPrompt += `\n\nProvide ONLY the answers, one per line, in the format Q1: answer, Q2: answer, etc. Be concise.`;
+
+    try {
+      const secrets = await loadSecrets();
+      const client = this.clients.groq;
+
+      if (client) {
+        const response = await fetch(client.api_url, {
+          method: 'POST',
+          headers: {
+            "Authorization": `Bearer ${client.token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: client.model,
+            messages: [{ role: "user", content: batchPrompt }],
+            max_tokens: 2048,
+            temperature: 0.1
+          })
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          if (result.choices && result.choices.length > 0) {
+            const content = result.choices[0].message.content;
+
+            // Parse the batch response
+            const lines = content.split('\n');
+            lines.forEach((line: string) => {
+              const match = line.match(/^Q(\d+):\s*(.+)/i);
+              if (match) {
+                const idx = parseInt(match[1]) - 1;
+                const answer = match[2].trim();
+                if (idx >= 0 && idx < questionsList.length) {
+                  results.set(questionsList[idx].question, answer);
+                }
+              }
+            });
+
+            printLog(`Batch answered ${results.size}/${questionsList.length} questions in single call`);
+          }
+        }
+      }
+    } catch (e) {
+      printLog(`Batch answer failed, falling back to individual: ${e}`);
+    }
+
+    return results;
+  }
+
   async extractSkills(description: string): Promise<any> {
     const secrets = await loadSecrets();
 
