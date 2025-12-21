@@ -11,6 +11,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     (document.getElementById('useAI') as HTMLInputElement).checked = secrets.use_AI !== false;
     (document.getElementById('batchMode') as HTMLInputElement).checked = settings.batch_mode !== false; // Default true
+    (document.getElementById('chunkMode') as HTMLInputElement).checked = settings.chunk_mode !== false; // Default true
+
+    // Set initial visibility
+    const chunkModeContainer = document.getElementById('chunkModeContainer');
+    if (chunkModeContainer) {
+      chunkModeContainer.style.display = (settings.batch_mode !== false) ? 'block' : 'none';
+    }
     (document.getElementById('groqApiKey') as HTMLInputElement).value = secrets.groq_api_key || '';
     (document.getElementById('groqModel') as HTMLInputElement).value = secrets.groq_model || 'llama-3.1-8b-instant';
     (document.getElementById('groqApiUrl') as HTMLInputElement).value = secrets.groq_api_url || 'https://api.groq.com/openai/v1/chat/completions';
@@ -18,6 +25,17 @@ document.addEventListener('DOMContentLoaded', () => {
     (document.getElementById('hfModel') as HTMLInputElement).value = secrets.huggingface_model || 'meta-llama/Llama-3.2-3B-Instruct';
     (document.getElementById('hfApiUrl') as HTMLInputElement).value = secrets.huggingface_api_url || 'https://router.huggingface.co/v1/chat/completions';
   });
+
+  // Toggle Chunk Mode visibility based on Batch Mode
+  const batchModeCheckbox = document.getElementById('batchMode');
+  if (batchModeCheckbox) {
+    batchModeCheckbox.addEventListener('change', (e) => {
+      const chunkModeContainer = document.getElementById('chunkModeContainer');
+      if (chunkModeContainer) {
+        chunkModeContainer.style.display = (e.target as HTMLInputElement).checked ? 'block' : 'none';
+      }
+    });
+  }
 
   // Save settings
   // Save settings
@@ -63,7 +81,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const settings = {
-        batch_mode: (document.getElementById('batchMode') as HTMLInputElement).checked
+        batch_mode: (document.getElementById('batchMode') as HTMLInputElement).checked,
+        chunk_mode: (document.getElementById('chunkMode') as HTMLInputElement).checked
       };
 
       chrome.storage.sync.set({ secrets: updatedSecrets, settings }, () => {

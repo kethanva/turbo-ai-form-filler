@@ -43,35 +43,52 @@ class FormFiller {
       // Check if batch mode is enabled (default: true)
       const settings = await this.getSettings();
       const batchModeEnabled = settings.batch_mode !== false;
+      const chunkModeEnabled = settings.chunk_mode !== false; // Default true if not set
 
       if (batchModeEnabled) {
-        // BATCH MODE: Get all answers in a single LLM call
-        printLog("Using BATCH mode (faster)");
+        // BATCH MODE: Process in chunks (if enabled) to avoid overloading LLM or Browser
+        printLog(chunkModeEnabled ? "Using BATCH mode (faster, chunked)" : "Using BATCH mode (fastest, all-at-once)");
         const userInfo = personals.user_information_all || JSON.stringify(personals);
-        const questionsList = formElements.map(el => ({
-          question: el.question || 'Form field',
-          options: el.options,
-          questionType: this.determineQuestionType(el.type, el.options)
-        }));
 
-        printLog(`Getting batch answers for ${questionsList.length} questions...`);
-        const batchAnswers = await llmManager.getBatchAnswers(
-          questionsList,
-          undefined,
-          userInfo,
-          JSON.stringify(personals)
-        );
-        printLog(`Got ${batchAnswers.size} batch answers`);
+        // Process questions in chunks of 25 (if chunking is on) or all at once
+        const CHUNK_SIZE = chunkModeEnabled ? 25 : formElements.length;
+        for (let i = 0; i < formElements.length; i += CHUNK_SIZE) {
+          const chunk = formElements.slice(i, i + CHUNK_SIZE);
+          printLog(`Processing batch chunk ${Math.floor(i / CHUNK_SIZE) + 1} (${chunk.length} elements)...`);
 
-        // Fill elements using cached answers (parallel with no LLM wait)
-        await Promise.all(formElements.map(async (formElement) => {
-          try {
-            const cachedAnswer = batchAnswers.get(formElement.question || 'Form field');
-            await this.fillElementWithAnswer(formElement, cachedAnswer);
-          } catch (error) {
-            printLog(`Error filling element: ${error}`);
+          // 1. Prepare questions for this chunk
+          const questionsList = chunk.map(el => ({
+            question: this.getEnhancedQuestion(el),
+            options: el.options,
+            questionType: this.determineQuestionType(el.type, el.options)
+          }));
+
+          // 2. Get answers for this chunk from LLM
+          printLog(`Sending batch request for ${questionsList.length} questions...`);
+          const batchAnswers = await llmManager.getBatchAnswers(
+            questionsList,
+            undefined,
+            userInfo,
+            JSON.stringify(personals)
+          );
+          printLog(`Got ${batchAnswers.size} answers for chunk`);
+
+          // 3. Fill elements in this chunk (parallel)
+          await Promise.all(chunk.map(async (formElement) => {
+            try {
+              const enhancedQuestion = this.getEnhancedQuestion(formElement);
+              const cachedAnswer = batchAnswers.get(enhancedQuestion);
+              await this.fillElementWithAnswer(formElement, cachedAnswer);
+            } catch (error) {
+              printLog(`Error filling element: ${error}`);
+            }
+          }));
+
+          // Small delay between chunks to let browser render/process events
+          if (i + CHUNK_SIZE < formElements.length) {
+            await this.delay(500);
           }
-        }));
+        }
       } else {
         // SEQUENTIAL MODE: One LLM call per field (more accurate)
         printLog("Using SEQUENTIAL mode (more accurate)");
@@ -348,20 +365,10 @@ class FormFiller {
   private async fillElement(formElement: FormElement): Promise<void> {
     try {
       const { element, type, question, options } = formElement;
-      const input = element as HTMLInputElement;
 
       printLog(`Filling element: ${question || 'Unknown field'}`);
 
-      // Build enhanced question with format hints for date/time fields
-      let enhancedQuestion = question || 'Form field';
-
-      // For date fields, detect expected format from placeholder
-      if (type === 'date' || type === 'text') {
-        const placeholder = input.getAttribute('placeholder') || '';
-        if (placeholder && (placeholder.toUpperCase().includes('MM') || placeholder.toUpperCase().includes('DD') || placeholder.toLowerCase().includes('date'))) {
-          enhancedQuestion = `${enhancedQuestion} (format: ${placeholder})`;
-        }
-      }
+      const enhancedQuestion = this.getEnhancedQuestion(formElement);
 
       // Get answer from LLM
       const userInfo = personals.user_information_all || JSON.stringify(personals);
@@ -398,16 +405,7 @@ class FormFiller {
 
       // Fall back to individual LLM call if no cached answer
       if (!answer) {
-        const input = element as HTMLInputElement;
-        let enhancedQuestion = question || 'Form field';
-
-        if (type === 'date' || type === 'text') {
-          const placeholder = input.getAttribute('placeholder') || '';
-          if (placeholder && (placeholder.toUpperCase().includes('MM') || placeholder.toUpperCase().includes('DD'))) {
-            enhancedQuestion = `${enhancedQuestion} (format: ${placeholder})`;
-          }
-        }
-
+        const enhancedQuestion = this.getEnhancedQuestion(formElement);
         const userInfo = personals.user_information_all || JSON.stringify(personals);
         const llmAnswer = await llmManager.getAnswer(
           enhancedQuestion,
@@ -433,6 +431,26 @@ class FormFiller {
     } catch (error) {
       printLog(`Error filling element: ${error}`);
     }
+  }
+
+  private getEnhancedQuestion(formElement: FormElement): string {
+    const { element, type, question } = formElement;
+    const input = element as HTMLInputElement;
+    let enhancedQuestion = question || 'Form field';
+
+    // For date fields, detect expected format from placeholder
+    if (type === 'date' || type === 'text') {
+      const placeholder = input.getAttribute('placeholder') || '';
+      if (placeholder && (
+        placeholder.toUpperCase().includes('MM') ||
+        placeholder.toUpperCase().includes('DD') ||
+        placeholder.toUpperCase().includes('YYYY') ||
+        placeholder.toLowerCase().includes('date')
+      )) {
+        enhancedQuestion = `${enhancedQuestion} (format: ${placeholder})`;
+      }
+    }
+    return enhancedQuestion;
   }
 
   private determineQuestionType(type: string, options?: string[]): string {
