@@ -244,13 +244,25 @@ class FormFiller {
   private async fillElement(formElement: FormElement): Promise<void> {
     try {
       const { element, type, question, options } = formElement;
+      const input = element as HTMLInputElement;
 
       printLog(`Filling element: ${question || 'Unknown field'}`);
+
+      // Build enhanced question with format hints for date/time fields
+      let enhancedQuestion = question || 'Form field';
+
+      // For date fields, detect expected format from placeholder
+      if (type === 'date' || type === 'text') {
+        const placeholder = input.getAttribute('placeholder') || '';
+        if (placeholder && (placeholder.toUpperCase().includes('MM') || placeholder.toUpperCase().includes('DD') || placeholder.toLowerCase().includes('date'))) {
+          enhancedQuestion = `${enhancedQuestion} (format: ${placeholder})`;
+        }
+      }
 
       // Get answer from LLM
       const userInfo = personals.user_information_all || JSON.stringify(personals);
       const answer = await llmManager.getAnswer(
-        question || 'Form field',
+        enhancedQuestion,
         options,
         this.determineQuestionType(type, options),
         undefined,
@@ -362,12 +374,51 @@ class FormFiller {
         break;
 
       case 'date':
-        // Try to parse various date formats and convert to yyyy-mm-dd
-        let dateValue = this.parseDateToISO(value);
-        if (dateValue) {
-          input.value = dateValue;
+        // Detect expected format from placeholder or data attribute
+        const datePlaceholder = (input.getAttribute('placeholder') || '').toUpperCase();
+        const datePattern = input.getAttribute('data-date-format') || input.getAttribute('pattern') || '';
+
+        // Determine the expected format
+        let expectedFormat = 'YYYY-MM-DD'; // Default for HTML5 date input
+        if (datePlaceholder.includes('MM') && datePlaceholder.includes('DD') && datePlaceholder.includes('YYYY')) {
+          expectedFormat = datePlaceholder.replace(/[^A-Z\-\/]/g, '');
+        } else if (datePattern) {
+          expectedFormat = datePattern.toUpperCase();
+        }
+
+        printLog(`Date field: placeholder="${datePlaceholder}", expectedFormat="${expectedFormat}"`);
+
+        // Parse the date from LLM response
+        let parsedDate = this.parseDateToISO(value);
+        if (parsedDate) {
+          // Format according to expected format
+          const [year, month, day] = parsedDate.split('-');
+          let formattedDate = parsedDate;
+
+          if (expectedFormat.startsWith('MM') && expectedFormat.includes('DD')) {
+            // MM-DD-YYYY or MM/DD/YYYY
+            const separator = expectedFormat.includes('/') ? '/' : '-';
+            formattedDate = `${month}${separator}${day}${separator}${year}`;
+          } else if (expectedFormat.startsWith('DD') && expectedFormat.includes('MM')) {
+            // DD-MM-YYYY or DD/MM/YYYY
+            const separator = expectedFormat.includes('/') ? '/' : '-';
+            formattedDate = `${day}${separator}${month}${separator}${year}`;
+          } else if (expectedFormat.startsWith('YYYY')) {
+            // YYYY-MM-DD or YYYY/MM/DD
+            const separator = expectedFormat.includes('/') ? '/' : '-';
+            formattedDate = `${year}${separator}${month}${separator}${day}`;
+          }
+
+          // For HTML5 date inputs, always use YYYY-MM-DD regardless of placeholder
+          if (input.type === 'date') {
+            input.value = parsedDate;
+          } else {
+            input.value = formattedDate;
+          }
+
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
+          printLog(`✓ Set date to: ${input.value} (format: ${expectedFormat})`);
         } else {
           printLog(`⚠ Could not parse date: ${value}`);
         }
