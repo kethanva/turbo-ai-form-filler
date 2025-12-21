@@ -81,41 +81,18 @@ class FormFiller {
         return;
       }
 
-      // Skip already checked checkboxes/radios
-      if ((input.type === 'checkbox' && input.checked) ||
-        (input.type === 'radio' && input.checked)) {
-        return;
-      }
+      // FORCE FILL MODE: Don't skip based on existing values
+      // Only skip if already checked checkboxes/radios AND they match what we would set
+      // (We'll let the LLM decide what to set)
 
-      // For select elements, skip if a real (non-placeholder) option is already selected
+      // For select elements, always include them (force fill)
       if (input.tagName.toLowerCase() === 'select') {
-        const select = input as unknown as HTMLSelectElement;
-        const selectVal = select.value.toLowerCase().trim();
-        const selectedText = select.options[select.selectedIndex]?.text.toLowerCase().trim() || '';
         const selectLabel = this.extractQuestion(input);
-
-        // Check if this is a placeholder value (not a real selection)
-        const isPlaceholder = !selectVal || selectVal === '' ||
-          selectVal === 'none' || selectVal === 'select' || selectVal === '-1' ||
-          selectVal === '0' || selectVal === 'default' || selectVal === 'null' ||
-          selectedText.includes('select') || selectedText.includes('choose') ||
-          selectedText.includes('option') || selectedText.includes('please');
-
-        printLog(`Select "${selectLabel}": value="${selectVal}", text="${selectedText}", isPlaceholder=${isPlaceholder}`);
-
-        // Skip only if it's NOT a placeholder (meaning a real value is selected)
-        if (!isPlaceholder) {
-          printLog(`Skipping select "${selectLabel}" - already has real value selected`);
-          return;
-        }
-      } else if (input.type !== 'checkbox' && input.type !== 'radio') {
-        // For text-like input types, skip if already has a value
-        // (Checkboxes and radios always have a value attribute that defines what gets submitted, 
-        // not whether they're filled, so we don't skip them based on value)
-        if (input.value && input.value.trim() !== '') {
-          return;
-        }
+        printLog(`Select "${selectLabel}": included for filling (force fill mode)`);
       }
+
+      // For checkboxes/radios, include them (force fill will set based on LLM answer)
+      // For text inputs, include them even if they have values (force fill)
 
       const question = this.extractQuestion(input);
       const options = this.extractOptions(input);
@@ -129,7 +106,95 @@ class FormFiller {
       });
     });
 
+    // Also detect complex div-based form elements (DHTMLX, Material forms, etc.)
+    const divBasedElements = this.findDivBasedFormElements();
+
+    // Merge, avoiding duplicates (by element reference)
+    const existingElements = new Set(elements.map(e => e.element));
+    divBasedElements.forEach(divEl => {
+      if (!existingElements.has(divEl.element)) {
+        elements.push(divEl);
+      }
+    });
+
+    printLog(`Total elements to fill: ${elements.length} (${elements.length - divBasedElements.length} standard + ${divBasedElements.filter(d => !existingElements.has(d.element)).length} div-based)`);
+
     return elements;
+  }
+
+  // Detect complex div-based form structures (DHTMLX, Material UI, Bootstrap, etc.)
+  private findDivBasedFormElements(): FormElement[] {
+    const elements: FormElement[] = [];
+
+    // Common patterns for div-based form layouts
+    const formPatterns = [
+      // DHTMLX forms
+      { wrapper: '.dhxform_item_label_left, .dhxform_item_label_top', label: '.dhxform_label label, .dhxform_label_nav_link', control: '.dhxform_control input, .dhxform_control select, .dhxform_control textarea' },
+      // Material Design forms
+      { wrapper: '.mdc-text-field, .mat-form-field, .MuiFormControl-root', label: 'label, .mdc-floating-label, .mat-label', control: 'input, select, textarea' },
+      // Bootstrap forms
+      { wrapper: '.form-group, .mb-3', label: 'label, .form-label', control: 'input, select, textarea, .form-control' },
+      // Generic patterns
+      { wrapper: '[class*="form-field"], [class*="form-item"], [class*="field-wrapper"]', label: 'label, [class*="label"]', control: 'input, select, textarea' },
+    ];
+
+    for (const pattern of formPatterns) {
+      const wrappers = document.querySelectorAll(pattern.wrapper);
+
+      wrappers.forEach(wrapper => {
+        // Find label within wrapper
+        const labelEl = wrapper.querySelector(pattern.label);
+        const labelText = labelEl?.textContent?.trim() || '';
+
+        // Find input control within wrapper
+        const controlEl = wrapper.querySelector(pattern.control) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+
+        if (controlEl && labelText) {
+          // Skip if already filled, hidden, disabled, etc.
+          if (this.shouldSkipElement(controlEl)) {
+            return;
+          }
+
+          const options = this.extractOptions(controlEl);
+
+          elements.push({
+            element: controlEl,
+            type: controlEl.type || (controlEl.tagName.toLowerCase() === 'select' ? 'select-one' : 'text'),
+            tagName: controlEl.tagName.toLowerCase(),
+            question: labelText,
+            options
+          });
+
+          printLog(`Div-based element found: "${labelText}" (type: ${controlEl.type || 'text'})`);
+        }
+      });
+    }
+
+    return elements;
+  }
+
+  // Helper to check if element should be skipped
+  private shouldSkipElement(input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): boolean {
+    // Skip hidden, submit, button elements
+    if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button' ||
+      input.type === 'reset' || input.type === 'image') {
+      return true;
+    }
+
+    // Skip disabled or readonly
+    if (input.disabled || (input as HTMLInputElement).readOnly) {
+      return true;
+    }
+
+    // Skip hidden via CSS
+    if (input.hidden || getComputedStyle(input).display === 'none' || getComputedStyle(input).visibility === 'hidden') {
+      return true;
+    }
+
+    // FORCE FILL MODE: Don't skip based on existing values
+    // All visible, enabled elements will be filled with LLM responses
+
+    return false;
   }
 
   private extractQuestion(element: HTMLElement): string {
