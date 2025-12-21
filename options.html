@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>Auto Form Filler - Settings</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    h1 {
+      color: #333;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: 500;
+      color: #555;
+    }
+
+    input[type="text"],
+    input[type="url"],
+    input[type="checkbox"] {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    input[type="checkbox"] {
+      width: auto;
+    }
+
+    button {
+      background-color: #1976d2;
+      color: white;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+    }
+
+    button:hover {
+      background-color: #1565c0;
+    }
+
+    .status {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 4px;
+    }
+
+    .status.success {
+      background-color: #e8f5e9;
+      color: #2e7d32;
+    }
+
+    .section {
+      margin-bottom: 30px;
+      padding: 20px;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+    }
+
+    .section h2 {
+      margin-top: 0;
+      color: #1976d2;
+    }
+
+    .help-text {
+      font-size: 12px;
+      color: #666;
+      margin-top: 5px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Auto Form Filler Settings</h1>
+
+  <form id="settingsForm">
+    <div class="section">
+      <h2>General Settings</h2>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="useAI"> Enable AI
+        </label>
+        <div class="help-text">Enable AI-powered form filling. Requires API keys below.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Groq API Settings (Primary)</h2>
+      <div class="form-group">
+        <label for="groqApiKey">API Key</label>
+        <input type="text" id="groqApiKey" placeholder="gsk_...">
+        <div class="help-text">Get your API key from <a href="https://console.groq.com/keys" target="_blank">Groq
+            Console</a></div>
+      </div>
+      <div class="form-group">
+        <label for="groqModel">Model</label>
+        <input type="text" id="groqModel" placeholder="llama-3.1-8b-instant">
+      </div>
+      <div class="form-group">
+        <label for="groqApiUrl">API URL</label>
+        <input type="url" id="groqApiUrl" placeholder="https://api.groq.com/openai/v1/chat/completions">
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>HuggingFace API Settings (Fallback)</h2>
+      <div class="form-group">
+        <label for="hfApiKey">API Key</label>
+        <input type="text" id="hfApiKey" placeholder="hf_...">
+        <div class="help-text">Get your FREE token from <a href="https://huggingface.co/settings/tokens"
+            target="_blank">HuggingFace Settings</a></div>
+      </div>
+      <div class="form-group">
+        <label for="hfModel">Model</label>
+        <input type="text" id="hfModel" placeholder="meta-llama/Llama-3.2-3B-Instruct">
+      </div>
+      <div class="form-group">
+        <label for="hfApiUrl">API URL</label>
+        <input type="url" id="hfApiUrl" placeholder="https://router.huggingface.co/v1/chat/completions">
+      </div>
+    </div>
+
+    <button type="button" id="saveButton">Save Settings</button>
+    <div id="status" class="status"></div>
+  </form>
+
+  <script src="dist/options.bundle.js"></script>
+</body>
+
+</html>

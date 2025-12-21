@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+CHROME_DATA/
+
+# Secrets - DO NOT COMMIT
+**/secrets.ts
+src/config/secrets.ts

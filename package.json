@@ -1,0 +1,16 @@
+{
+  "name": "auto-form-filler",
+  "version": "1.0.0",
+  "description": "Chrome extension for auto-filling forms with AI",
+  "scripts": {
+    "build": "tsc && npm run bundle",
+    "bundle": "npx esbuild dist/content.js --bundle --outfile=dist/content.bundle.js --format=iife --platform=browser && npx esbuild dist/popup.js --bundle --outfile=dist/popup.bundle.js --format=iife --platform=browser && npx esbuild dist/options.js --bundle --outfile=dist/options.bundle.js --format=iife --platform=browser",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.251",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.3.3"
+  }
+}
