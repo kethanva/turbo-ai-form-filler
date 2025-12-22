@@ -15,91 +15,26 @@ interface FormElement {
 // === HELPER FUNCTIONS ===
 
 /**
- * Sleep utility
+ * Detect if current page is Workday (needs delays for bot detection evasion)
+ */
+function isWorkdayDomain(): boolean {
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname.includes('workday.com') || hostname.includes('myworkday.com');
+}
+
+/**
+ * Sleep utility for delays
  */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
- * Get random delay within range
+ * Get random delay - returns actual delay only if on Workday, otherwise 0
  */
-function randomDelay(min: number, max: number): number {
+function getConditionalDelay(min: number, max: number): number {
+  if (!isWorkdayDomain()) return 0; // No delay for non-Workday sites
   return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-/**
- * Get element coordinates for realistic mouse events
- */
-function getElementCenter(element: HTMLElement): { x: number; y: number } {
-  const rect = element.getBoundingClientRect();
-  return {
-    x: rect.left + rect.width / 2 + (Math.random() - 0.5) * 10,
-    y: rect.top + rect.height / 2 + (Math.random() - 0.5) * 10
-  };
-}
-
-/**
- * Create realistic MouseEvent
- */
-function createMouseEvent(type: string, element: HTMLElement): MouseEvent {
-  const coords = getElementCenter(element);
-  return new MouseEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    view: window,
-    detail: type === 'click' ? 1 : 0,
-    screenX: coords.x + window.screenX,
-    screenY: coords.y + window.screenY,
-    clientX: coords.x,
-    clientY: coords.y,
-    button: 0,
-    buttons: type === 'mousedown' || type === 'mousemove' ? 1 : 0
-  });
-}
-
-/**
- * Create realistic InputEvent
- */
-function createInputEvent(data: string | null = null): InputEvent {
-  return new InputEvent('input', {
-    bubbles: true,
-    cancelable: true,
-    data: data,
-    inputType: 'insertText'
-  });
-}
-
-/**
- * Dispatch events in realistic sequence with delays
- */
-async function dispatchRealisticEvents(
-  element: HTMLElement,
-  eventType: 'input' | 'click' | 'change'
-): Promise<void> {
-  if (eventType === 'input') {
-    element.dispatchEvent(createMouseEvent('focus', element));
-    await sleep(randomDelay(10, 30));
-    element.dispatchEvent(createInputEvent());
-    await sleep(randomDelay(10, 30));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  } else if (eventType === 'click') {
-    element.dispatchEvent(createMouseEvent('mousedown', element));
-    await sleep(randomDelay(50, 100));
-    element.dispatchEvent(createMouseEvent('mouseup', element));
-    await sleep(randomDelay(10, 30));
-    element.dispatchEvent(createMouseEvent('click', element));
-  } else if (eventType === 'change') {
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-}
-
-/**
- * Check if on Workday domain
- */
-function isWorkdayDomain(): boolean {
-  const hostname = window.location.hostname.toLowerCase();
-  return hostname.includes('workday.com') || hostname.includes('myworkday.com');
 }
 
 class FormFiller {
@@ -186,20 +121,16 @@ class FormFiller {
       } else {
         // SEQUENTIAL MODE: One LLM call per field (more accurate)
         const delayMessage = isWorkdayDomain()
-          ? " with anti-detection delays"
+          ? " with delays for Workday detection evasion"
           : "";
         printLog(`Using SEQUENTIAL mode (more accurate)${delayMessage}`);
 
         for (const formElement of formElements) {
           await this.fillElement(formElement);
-
-          // Conditional delay: Slow on Workday to avoid bot detection, fast elsewhere
-          if (isWorkdayDomain()) {
-            const delay = randomDelay(500, 1500); // 0.5-1.5 seconds on Workday
-            printLog(`⏱ Workday delay: ${delay}ms`);
+          // Conditional delay: 500-1500ms on Workday, 0ms elsewhere
+          const delay = getConditionalDelay(500, 1500);
+          if (delay > 0) {
             await sleep(delay);
-          } else {
-            await this.delay(100); // Normal speed for other sites
           }
         }
       }
@@ -1164,9 +1095,9 @@ class FormFiller {
         }
 
         if (bestMatch) {
-          // Realistic click sequence
-          await dispatchRealisticEvents(bestMatch, 'click');
-          await sleep(randomDelay(50, 100));
+          // Simple click
+          bestMatch.click();
+          await sleep(100);
           printLog(`✓ Clicked ${type} option: ${bestMatch.textContent} `);
         } else {
           // Fallback: If no option matches, scrape visible options and ASK LLM AGAIN
@@ -1241,9 +1172,9 @@ class FormFiller {
                   }
 
                   if (newBestMatch) {
-                    // Realistic click sequence
-                    await dispatchRealisticEvents(newBestMatch, 'click');
-                    await sleep(randomDelay(50, 100));
+                    // Simple click
+                    newBestMatch.click();
+                    await sleep(100);
                     printLog(`✓ Clicked ${type} option(after re - ask): ${newBestMatch.textContent} `);
                     return; // Success!
                   }
