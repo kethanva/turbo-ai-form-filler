@@ -210,8 +210,16 @@ JavaScript arrays start at index 0. To find the correct entry:
 
 2. **DATE FIELDS**: For "Start Date" or "End Date" questions:
    - Extract from the .start or .end field in the JSON array
-   - Convert YYYY-MM to MM/01/YYYY (e.g., "2008-12" → "12/01/2008")
-   - If "Present", use "12/31/2025"
+   - **CRITICAL**: Convert YYYY-MM format to MM/01/YYYY
+   - **CRITICAL**: If the value is "Present", you MUST return "12/31/2025" NOT the start date
+   
+   **EXAMPLES**:
+   - "From [Entry: 1]" → experience_details[0].start → "2022-02" → return "02/01/2022"
+   - "To [Entry: 1]" → experience_details[0].end → "Present" → return "12/31/2025" (NOT "02/01/2022"!)
+   - "From [Entry: 2]" → experience_details[1].start → "2019-03" → return "03/01/2019"
+   - "To [Entry: 2]" → experience_details[1].end → "2022-02" → return "02/01/2022"
+   - "From [Entry: 3]" → experience_details[2].start → "2013-11" → return "11/01/2013"
+   - "To [Entry: 3]" → experience_details[2].end → "2019-03" → return "03/01/2019" (NOT "11/01/2013"!)
 
 3. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
    - Extract from the .start or .completion field in the JSON array
