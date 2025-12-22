@@ -389,35 +389,60 @@ class FormFiller {
     }
 
     // --- SUCCESSFACTORS / GENERIC REPEATER HANDLING ---
-    // Detects "Row number X" labels often found in repeating sections (e.g. Work Experience)
-    // Structure often: <span>Row number 1</span> ... <div input>
+    // Detects entry numbers in repeating sections (e.g. Work Experience, Education)
+    // Supports multiple patterns:
+    // - SuccessFactors: "Row number 1"
+    // - Workday: "Work Experience 1", "Education 1", etc.
     let rowText = '';
     const rowHeader = element.closest('.rcmSectionComponent')?.previousElementSibling; // SuccessFactors pattern
     if (rowHeader && rowHeader.textContent?.includes('Row number')) {
       rowText = rowHeader.textContent.trim();
     } else {
-      // Generic check for nearby "Row number" or "Item X"
-      // Look up to 10 levels up (inputs can be deeply nested)
+      // Check for Workday patterns first (more specific)
+      // Look for labels like "Work Experience 1", "Education 1", etc.
       let current = element.parentElement;
-      for (let i = 0; i < 10 && current; i++) {
+      for (let i = 0; i < 15 && current; i++) {
+        // Check all text content in parent hierarchy
+        const textContent = current.textContent || '';
+
+        // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
+        const workdayMatch = textContent.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+        if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
+          rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
+          printLog(`Found Workday section: ${rowText}`);
+          break;
+        }
+
+        // SuccessFactors/Generic: "Row number X"
         const rowSpan = current.querySelector('.rowNumTextAcc') || current.previousElementSibling;
         if (rowSpan && rowSpan.textContent?.includes('Row number')) {
           rowText = rowSpan.textContent.trim();
           break;
         }
+
         current = current.parentElement;
       }
     }
 
     if (rowText) {
       // Normalize to "[Entry: X]" to be crystal clear for LLM
-      const match = rowText.match(/Row number\s*(\d+)/i);
+      // Support multiple patterns
+      let match = rowText.match(/Row number\s*(\d+)/i);
       if (match) {
         const entryNum = match[1];
         question += ` [Entry: ${entryNum}]`;
-        printLog(`Context added: Entry ${entryNum} for field`);
+        printLog(`Context added: Entry ${entryNum} for field (Row number)`);
       } else {
-        question += ` [${rowText}]`;
+        // Try Workday patterns
+        match = rowText.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+        if (match) {
+          const entryNum = match[2];
+          question += ` [Entry: ${entryNum}]`;
+          printLog(`Context added: Entry ${entryNum} for field (${match[1]})`);
+        } else {
+          // Fallback: just append the row text
+          question += ` [${rowText}]`;
+        }
       }
     }
     // --------------------------------
