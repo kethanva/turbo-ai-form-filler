@@ -168,6 +168,12 @@ class FormFiller {
         }
       }
 
+      // Skip Workday utility buttons (Language, Settings, Account menus)
+      if (input.getAttribute('data-automation-id') === 'utilityMenuButton' ||
+        input.closest('[data-automation-id="utilityButtonBar"]')) {
+        return;
+      }
+
       // Skip disabled or readonly inputs
       if ((input as HTMLInputElement).disabled || (input as HTMLInputElement).readOnly || input.getAttribute('readonly') !== null) {
         return;
