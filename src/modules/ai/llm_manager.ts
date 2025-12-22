@@ -202,27 +202,27 @@ JavaScript arrays start at index 0. To find the correct entry:
 **Formula: array[Entry_Number - 1]**
 
 1. **FOR ANY QUESTION WITH [Entry: X]**: Extract ONLY from the arrays above.
-   - "Start Date [Entry: 6]" → experience_details[5].start → "2008-12" → "12/01/2008"
+   - "Start Date [Entry: 6]" → experience_details[5].from → "2008-12" → "12/01/2008"
    - "Employer [Entry: 6]" → experience_details[5].companyKey → "mphasis" (NOT "tavant"!)
-   - "End Year [Entry: 1]" → education_details[0].completion → "2021-10" → "2021"
+   - "End Year [Entry: 1]" → education_details[0].to → "2021-10" → "2021"
    - DO NOT use any data from the "General Context" section below
    - DO NOT use highlights, industry, description, or any text data
 
 2. **DATE FIELDS**: For "Start Date" or "End Date" questions:
-   - Extract from the .start or .end field in the JSON array
+   - Extract from the .from or .to field in the JSON array
    - **CRITICAL**: Convert YYYY-MM format to MM/01/YYYY
-   - **CRITICAL**: If the value is "Present", you MUST return "12/31/2025" NOT the start date
+   - **CRITICAL**: If the value is "Present", you MUST return "12/31/2025" NOT the from date
    
    **EXAMPLES**:
-   - "From [Entry: 1]" → experience_details[0].start → "2022-02" → return "02/01/2022"
-   - "To [Entry: 1]" → experience_details[0].end → "Present" → return "12/31/2025" (NOT "02/01/2022"!)
-   - "From [Entry: 2]" → experience_details[1].start → "2019-03" → return "03/01/2019"
-   - "To [Entry: 2]" → experience_details[1].end → "2022-02" → return "02/01/2022"
-   - "From [Entry: 3]" → experience_details[2].start → "2013-11" → return "11/01/2013"
-   - "To [Entry: 3]" → experience_details[2].end → "2019-03" → return "03/01/2019" (NOT "11/01/2013"!)
+   - "From [Entry: 1]" → experience_details[0].from → "2022-02" → return "02/01/2022"
+   - "To [Entry: 1]" → experience_details[0].to → "Present" → return "12/31/2025" (NOT "02/01/2022"!)
+   - "From [Entry: 2]" → experience_details[1].from → "2019-03" → return "03/01/2019"
+   - "To [Entry: 2]" → experience_details[1].to → "2022-02" → return "02/01/2022"
+   - "From [Entry: 3]" → experience_details[2].from → "2013-11" → return "11/01/2013"
+   - "To [Entry: 3]" → experience_details[2].to → "2019-03" → return "03/01/2019" (NOT "11/01/2013"!)
 
 3. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
-   - Extract from the .start or .completion field in the JSON array
+   - Extract from the .from or .to field in the JSON array
    - Return only the year portion (e.g., "2021-10" → "2021")
 
 4. **LOCATION FIELDS**: For "Location" questions in Work Experience:
