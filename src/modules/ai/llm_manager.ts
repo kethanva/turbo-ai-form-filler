@@ -225,18 +225,18 @@ JavaScript arrays start at index 0. To find the correct entry:
    - Extract from the .start or .completion field in the JSON array
    - Return only the year portion (e.g., "2021-10" → "2021")
 
-4. **EMPLOYER/UNIVERSITY FIELDS**: 
-   - For Work Experience: Use .companyKey from experience_details
-   - For Education: Use .institution from education_details
+4. **LOCATION FIELDS**: For "Location" questions in Work Experience:
+   - Extract from the .location field in experience_details
+   - **CRITICAL**: ALWAYS return "Bangalore, Karnataka, India" from the location field
    
    **EXAMPLES**:
-   - "Employer [Entry: 1]" → experience_details[0].companyKey → "uhg_optum_labs"
-   - "Company [Entry: 2]" → experience_details[1].companyKey → "bmc_netreo" (NOT "uhg_optum_labs"!)
-   - "School or University [Entry: 1]" → education_details[0].institution → "L.J.M.U Liverpool"
-   - "School or University [Entry: 2]" → education_details[1].institution → "I.I.I.T Bangalore" (NOT "L.J.M.U Liverpool"!)
-   - "School or University [Entry: 3]" → education_details[2].institution → "K.S.I.T (V.T.U) Bangalore"
+   - "Location [Entry: 1]" → experience_details[0].location → "Bangalore, Karnataka, India"
+   - "Location [Entry: 2]" → experience_details[1].location → "Bangalore, Karnataka, India"
+   - "Work Location [Entry: 3]" → experience_details[2].location → "Bangalore, Karnataka, India"
 
-5. **IF [Entry: X] is missing**: Return "N/A"
+5. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
+
+6. **IF [Entry: X] is missing**: Return "N/A"
 
 === General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
