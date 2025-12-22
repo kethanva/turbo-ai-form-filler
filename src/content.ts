@@ -338,11 +338,6 @@ class FormFiller {
       }
     }
 
-    // Check for placeholder
-    if (!question && 'placeholder' in element) {
-      question = (element as HTMLInputElement).placeholder || '';
-    }
-
     // Check for fieldset legend (common in listboxes/radio groups)
     if (!question) {
       const fieldset = element.closest('fieldset');
@@ -357,7 +352,7 @@ class FormFiller {
     // Check for aria-label (but ignore generic "Select One" labels)
     if (!question) {
       const ariaLabel = element.getAttribute('aria-label') || '';
-      const genericLabels = ['select one', 'choose', 'select option', 'required', 'select'];
+      const genericLabels = ['select one', 'choose', 'select option', 'required', 'select', 'type your response', 'enter value'];
       const isGeneric = genericLabels.some(l => ariaLabel.toLowerCase().includes(l));
 
       if (ariaLabel && !isGeneric) {
@@ -365,9 +360,41 @@ class FormFiller {
       }
     }
 
+    // Check for nearby text using more aggressive upward traversal (fixing "Type your response" issue)
+    // Common ATS patterns: Greenhouse (.application-question), Lever, etc.
+    if (!question) {
+      // 1. Check specific known patterns (Greenhouse, etc.)
+      const greenhouseWrapper = element.closest('.application-question, .field, .form-group, .form-item, tr');
+      if (greenhouseWrapper) {
+        const potentialLabel = greenhouseWrapper.querySelector('.application-label, .label, .field-label, label, .text, th');
+        if (potentialLabel) {
+          // Ensure this label isn't for another input (basic check)
+          question = potentialLabel.textContent?.trim() || '';
+        }
+      }
+
+      // 2. Generic sibling check (if input is in a wrapper like div.application-field)
+      if (!question) {
+        const parent = element.parentElement;
+        if (parent) {
+          // Check previous sibling of parent (often the label container)
+          const prevSibling = parent.previousElementSibling;
+          if (prevSibling && (prevSibling.className.includes('label') || prevSibling.className.includes('text'))) {
+            question = prevSibling.textContent?.trim() || '';
+          }
+        }
+      }
+    }
+
     // Check for name attribute
     if (!question) {
       question = element.getAttribute('name') || '';
+    }
+
+    // CHECK PLACEHOLDER LAST (Fallback)
+    // Only use if we haven't found a real label, as placeholders are often generic "Type answer here"
+    if (!question && 'placeholder' in element) {
+      question = (element as HTMLInputElement).placeholder || '';
     }
 
     // --- WORKDAY SPECIAL HANDLING ---
