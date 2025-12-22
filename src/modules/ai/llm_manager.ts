@@ -228,11 +228,14 @@ JavaScript arrays start at index 0. To find the correct entry:
 4. **LOCATION FIELDS**: For "Location" questions in Work Experience:
    - Extract from the .location field in experience_details
    - **CRITICAL**: ALWAYS return "Bangalore, Karnataka, India" from the location field
+   - **CRITICAL**: DO NOT return the companyKey value! Extract from .location ONLY!
    
    **EXAMPLES**:
-   - "Location [Entry: 1]" → experience_details[0].location → "Bangalore, Karnataka, India"
-   - "Location [Entry: 2]" → experience_details[1].location → "Bangalore, Karnataka, India"
-   - "Work Location [Entry: 3]" → experience_details[2].location → "Bangalore, Karnataka, India"
+   - "Location [Entry: 1]" → experience_details[0].location → "Bangalore, Karnataka, India" (NOT companyKey!)
+   - "Location [Entry: 2]" → experience_details[1].location → "Bangalore, Karnataka, India" (NOT "BMC Netreo"!)
+   - "Location [Entry: 3]" → experience_details[2].location → "Bangalore, Karnataka, India" (NOT "VMware"!)
+   - "Location [Entry: 4]" → experience_details[3].location → "Bangalore, Karnataka, India" (NOT "CGI"!)
+   - "Location [Entry: 6]" → experience_details[5].location → "Bangalore, Karnataka, India" (NOT "Mphasis"!)
 
 5. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
 
