@@ -398,29 +398,49 @@ class FormFiller {
     if (rowHeader && rowHeader.textContent?.includes('Row number')) {
       rowText = rowHeader.textContent.trim();
     } else {
-      // Check for Workday patterns first (more specific)
-      // Look for labels like "Work Experience 1", "Education 1", etc.
+      // Check for Workday patterns
+      // Method 1: Use aria-labelledby (most reliable for Workday)
       let current = element.parentElement;
-      for (let i = 0; i < 15 && current; i++) {
-        // Check all text content in parent hierarchy
-        const textContent = current.textContent || '';
-
-        // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
-        const workdayMatch = textContent.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
-        if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
-          rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
-          printLog(`Found Workday section: ${rowText}`);
-          break;
+      for (let i = 0; i < 20 && current && !rowText; i++) {
+        const labelId = current.getAttribute('aria-labelledby');
+        if (labelId) {
+          const labelElement = document.getElementById(labelId);
+          if (labelElement) {
+            const labelText = labelElement.textContent?.trim() || '';
+            const workdayMatch = labelText.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+            if (workdayMatch) {
+              rowText = labelText;
+              printLog(`Found Workday section via aria-labelledby: ${rowText}`);
+              break;
+            }
+          }
         }
-
-        // SuccessFactors/Generic: "Row number X"
-        const rowSpan = current.querySelector('.rowNumTextAcc') || current.previousElementSibling;
-        if (rowSpan && rowSpan.textContent?.includes('Row number')) {
-          rowText = rowSpan.textContent.trim();
-          break;
-        }
-
         current = current.parentElement;
+      }
+
+      // Method 2: Check text content (fallback)
+      if (!rowText) {
+        current = element.parentElement;
+        for (let i = 0; i < 15 && current; i++) {
+          const textContent = current.textContent || '';
+
+          // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
+          const workdayMatch = textContent.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+          if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
+            rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
+            printLog(`Found Workday section: ${rowText}`);
+            break;
+          }
+
+          // SuccessFactors/Generic: "Row number X"
+          const rowSpan = current.querySelector('.rowNumTextAcc') || current.previousElementSibling;
+          if (rowSpan && rowSpan.textContent?.includes('Row number')) {
+            rowText = rowSpan.textContent.trim();
+            break;
+          }
+
+          current = current.parentElement;
+        }
       }
     }
 
