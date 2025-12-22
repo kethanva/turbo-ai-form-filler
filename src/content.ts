@@ -12,6 +12,7 @@ interface FormElement {
   options?: string[];
 }
 
+<<<<<<< HEAD
 // === REALISTIC EVENT HELPERS TO BYPASS BOT DETECTION ===
 
 /**
@@ -109,6 +110,29 @@ async function dispatchRealisticEvents(
   } else if (eventType === 'change') {
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }
+=======
+/**
+ * Detect if current page is Workday (needs delays for bot detection evasion)
+ */
+function isWorkdayDomain(): boolean {
+  const hostname = window.location.hostname.toLowerCase();
+  return hostname.includes('workday.com') || hostname.includes('myworkday.com');
+}
+
+/**
+ * Sleep utility for delays
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Get random delay - returns actual delay only if on Workday, otherwise 0
+ */
+function getConditionalDelay(min: number, max: number): number {
+  if (!isWorkdayDomain()) return 0; // No delay for non-Workday sites
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+>>>>>>> master
 }
 
 class FormFiller {
@@ -194,10 +218,22 @@ class FormFiller {
         }
       } else {
         // SEQUENTIAL MODE: One LLM call per field (more accurate)
-        printLog("Using SEQUENTIAL mode (more accurate)");
+        const delayMessage = isWorkdayDomain()
+          ? " with delays for Workday detection evasion"
+          : "";
+        printLog(`Using SEQUENTIAL mode (more accurate)${delayMessage}`);
+
         for (const formElement of formElements) {
           await this.fillElement(formElement);
+<<<<<<< HEAD
           await sleep(randomDelay(80, 200)); // Human-like delay between fields
+=======
+          // Conditional delay: 500-1500ms on Workday, 0ms elsewhere
+          const delay = getConditionalDelay(500, 1500);
+          if (delay > 0) {
+            await sleep(delay);
+          }
+>>>>>>> master
         }
       }
 

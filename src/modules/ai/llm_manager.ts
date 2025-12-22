@@ -223,6 +223,42 @@ JavaScript arrays start at index 0. To find the correct entry:
 
 === General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
+`;
+
+    // If we have Entry-based questions, inject structured arrays
+    // This block is now always included as per the HEAD version logic
+    batchPrompt += `
+
+=== STRUCTURED DATA FOR REPEATING SECTIONS ===
+
+**EXPERIENCE_DETAILS** (use for Work Experience questions):
+[
+  {"entry": 1, "company": "UHG Optum Labs", "title": "Principal Engineer", "location": "Bangalore, Karnataka, India", "start_date": "02/2022", "end_date": "Present", "currently_work_here": true},
+  {"entry": 2, "company": "BMC Netreo", "title": "Cloud Lead", "location": "Remote, USA", "start_date": "06/2019", "end_date": "01/2022", "currently_work_here": false},
+  {"entry": 3, "company": "VMware", "title": "Senior Member of Technical Staff", "location": "Bangalore, Karnataka, India", "start_date": "06/2013", "end_date": "05/2019", "currently_work_here": false},
+  {"entry": 4, "company": "CGI", "title": "Senior Software Engineer", "location": "Bangalore, Karnataka, India", "start_date": "08/2012", "end_date": "05/2013", "currently_work_here": false},
+  {"entry": 5, "company": "Tavant", "title": "Software Engineer", "location": "Bangalore, Karnataka, India", "start_date": "06/2011", "end_date": "07/2012", "currently_work_here": false},
+  {"entry": 6, "company": "Mphasis", "title": "Software Engineer", "location": "Bangalore, Karnataka, India", "start_date": "04/2008", "end_date": "05/2011", "currently_work_here": false}
+]
+
+**EDUCATION_DETAILS** (use for Education questions):
+[
+  {"entry": 1, "school": "Liverpool John Moores University, UK", "degree": "Master of Science (M.S.)", "field": "Computer Science", "graduation_year": "2021", "gpa": "3.5"},
+  {"entry": 2, "school": "K.S.I.T (V.T.U), Bangalore", "degree": "Bachelor of Engineering (B.E.)", "field": "Computer Science", "graduation_year": "2008", "gpa": "3.2"}
+]
+
+**CRITICAL INDEXING INSTRUCTIONS:**
+- When you see [Entry: 1] -> use experience_details[0] or education_details[0] (ARRAY INDEX = Entry Number - 1)
+- When you see [Entry: 2] -> use experience_details[1] or education_details[1]
+- When you see [Entry: 3] -> use experience_details[2] or education_details[2]
+- When you see [Entry: 6] -> use experience_details[5] or education_details[5]
+- EXAMPLE: "Company [Entry: 2]" = experience_details[1].company = "BMC Netreo"
+- EXAMPLE: "School [Entry: 1]" = education_details[0].school = "Liverpool John Moores University, UK"
+
+DO NOT just return the entry number! Look up the actual data from the arrays!
+`;
+
+    batchPrompt += `
 
 ===================================================================
 
