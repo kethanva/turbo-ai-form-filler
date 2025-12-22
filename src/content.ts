@@ -12,6 +12,105 @@ interface FormElement {
   options?: string[];
 }
 
+// === REALISTIC EVENT HELPERS TO BYPASS BOT DETECTION ===
+
+/**
+ * Sleep for random duration to mimic human behavior
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Get random delay within range
+ */
+function randomDelay(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+/**
+ * Get element coordinates for realistic mouse events
+ */
+function getElementCenter(element: HTMLElement): { x: number; y: number } {
+  const rect = element.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2 + (Math.random() - 0.5) * 10, // Add slight randomness
+    y: rect.top + rect.height / 2 + (Math.random() - 0.5) * 10
+  };
+}
+
+/**
+ * Create realistic MouseEvent
+ */
+function createMouseEvent(type: string, element: HTMLElement): MouseEvent {
+  const coords = getElementCenter(element);
+  return new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    detail: type === 'click' ? 1 : 0,
+    screenX: coords.x + window.screenX,
+    screenY: coords.y + window.screenY,
+    clientX: coords.x,
+    clientY: coords.y,
+    button: 0,
+    buttons: type === 'mousedown' || type === 'mousemove' ? 1 : 0
+  });
+}
+
+/**
+ * Create realistic InputEvent
+ */
+function createInputEvent(data: string | null = null): InputEvent {
+  return new InputEvent('input', {
+    bubbles: true,
+    cancelable: true,
+    data: data,
+    inputType: 'insertText'
+  });
+}
+
+/**
+ * Create realistic KeyboardEvent
+ */
+function createKeyboardEvent(type: string, key: string = ''): KeyboardEvent {
+  return new KeyboardEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    key: key,
+    code: key ? `Key${key.toUpperCase()}` : '',
+    charCode: key ? key.charCodeAt(0) : 0,
+    keyCode: key ? key.charCodeAt(0) : 0
+  });
+}
+
+/**
+ * Dispatch events in realistic sequence with delays
+ * This mimics how a real user interacts with form fields
+ */
+async function dispatchRealisticEvents(
+  element: HTMLElement,
+  eventType: 'input' | 'click' | 'change'
+): Promise<void> {
+  if (eventType === 'input') {
+    // Realistic input sequence: focus -> input ->  change
+    element.dispatchEvent(createMouseEvent('focus', element));
+    await sleep(randomDelay(10, 30));
+    element.dispatchEvent(createInputEvent());
+    await sleep(randomDelay(10, 30));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  } else if (eventType === 'click') {
+    // Realistic click sequence: mousedown -> mouseup -> click
+    element.dispatchEvent(createMouseEvent('mousedown', element));
+    await sleep(randomDelay(50, 100));
+    element.dispatchEvent(createMouseEvent('mouseup', element));
+    await sleep(randomDelay(10, 30));
+    element.dispatchEvent(createMouseEvent('click', element));
+  } else if (eventType === 'change') {
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+
 class FormFiller {
   private isRunning: boolean = false;
   private filledCount: number = 0;
@@ -73,16 +172,20 @@ class FormFiller {
           );
           printLog(`Got ${batchAnswers.size} answers for chunk`);
 
-          // 3. Fill elements in this chunk (parallel)
-          await Promise.all(chunk.map(async (formElement) => {
+          // 3. Fill elements in this chunk (SEQUENTIAL to prevent UI interference)
+          // We must fill sequentially because opening a dropdown often closes others
+          for (const formElement of chunk) {
             try {
               const enhancedQuestion = this.getEnhancedQuestion(formElement);
               const cachedAnswer = batchAnswers.get(enhancedQuestion);
               await this.fillElementWithAnswer(formElement, cachedAnswer);
+
+              // Small delay between elements to allow UI to settle
+              await this.delay(100);
             } catch (error) {
               printLog(`Error filling element: ${error}`);
             }
-          }));
+          }
 
           // Small delay between chunks to let browser render/process events
           if (i + CHUNK_SIZE < formElements.length) {
@@ -94,7 +197,7 @@ class FormFiller {
         printLog("Using SEQUENTIAL mode (more accurate)");
         for (const formElement of formElements) {
           await this.fillElement(formElement);
-          await this.delay(100); // Small delay between fills
+          await sleep(randomDelay(80, 200)); // Human-like delay between fields
         }
       }
 
@@ -110,28 +213,36 @@ class FormFiller {
     const elements: FormElement[] = [];
 
     // Find all input elements
-    const inputs = document.querySelectorAll<HTMLInputElement>('input, textarea, select');
-    printLog(`Found ${inputs.length} total input/textarea/select elements`);
+    const inputs = document.querySelectorAll('input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget');
+    printLog(`Found ${inputs.length} total input/textarea/select/button elements`);
 
-    inputs.forEach((input) => {
-      // Skip hidden, submit, button elements
-      if (input.type === 'hidden' ||
-        input.type === 'submit' ||
-        input.type === 'button' ||
-        input.type === 'reset' ||
-        input.type === 'image') {
-        return;
+    inputs.forEach((element) => {
+      const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement | HTMLElement;
+
+      // Skip hidden, submit, button elements (UNLESS it's a listbox button)
+      const isListbox = input.getAttribute('aria-haspopup') === 'listbox';
+
+      if (!isListbox) {
+        // Safe check for type property
+        const inputType = (input as any).type;
+        if (inputType === 'hidden' ||
+          inputType === 'submit' ||
+          inputType === 'button' ||
+          inputType === 'reset' ||
+          inputType === 'image') {
+          return;
+        }
       }
 
       // Skip disabled or readonly inputs
-      if (input.disabled || input.readOnly || input.getAttribute('readonly') !== null) {
+      if ((input as HTMLInputElement).disabled || (input as HTMLInputElement).readOnly || input.getAttribute('readonly') !== null) {
         return;
       }
 
       // Skip hidden elements (CSS hidden or HTML hidden attribute)
       if (input.hidden ||
         input.getAttribute('hidden') !== null ||
-        input.getAttribute('aria-hidden') === 'true' ||
+        (input.getAttribute('aria-hidden') === 'true' && !isListbox && input.tagName.toLowerCase() !== 'ui5-date-picker-xweb-calendar-widget') || // Listboxes might be complex, be careful
         getComputedStyle(input).display === 'none' ||
         getComputedStyle(input).visibility === 'hidden') {
         return;
@@ -153,9 +264,23 @@ class FormFiller {
       const question = this.extractQuestion(input);
       const options = this.extractOptions(input);
 
+      // Check for combobox role or listbox popup
+      // Check for combobox role or listbox popup
+      let type = (input as any).type || 'text';
+      if (input.tagName.toLowerCase() === 'ui5-date-picker-xweb-calendar-widget') {
+        type = 'ui5-date';
+        printLog(`Found UI5 Date Picker: ${question}`);
+      } else if (isListbox) {
+        type = 'listbox';
+        printLog(`Found listbox button: ${question}`);
+      } else if (input.getAttribute('role') === 'combobox') {
+        type = 'combobox';
+        printLog(`Found combobox: ${question}`);
+      }
+
       elements.push({
         element: input,
-        type: input.type || 'text',
+        type: type,
         tagName: input.tagName.toLowerCase(),
         question,
         options
@@ -278,15 +403,87 @@ class FormFiller {
       question = (element as HTMLInputElement).placeholder || '';
     }
 
-    // Check for aria-label
+    // Check for fieldset legend (common in listboxes/radio groups)
     if (!question) {
-      question = element.getAttribute('aria-label') || '';
+      const fieldset = element.closest('fieldset');
+      if (fieldset) {
+        const legend = fieldset.querySelector('legend');
+        if (legend) {
+          question = legend.textContent?.trim() || '';
+        }
+      }
+    }
+
+    // Check for aria-label (but ignore generic "Select One" labels)
+    if (!question) {
+      const ariaLabel = element.getAttribute('aria-label') || '';
+      const genericLabels = ['select one', 'choose', 'select option', 'required', 'select'];
+      const isGeneric = genericLabels.some(l => ariaLabel.toLowerCase().includes(l));
+
+      if (ariaLabel && !isGeneric) {
+        question = ariaLabel;
+      }
     }
 
     // Check for name attribute
     if (!question) {
       question = element.getAttribute('name') || '';
     }
+
+    // --- WORKDAY SPECIAL HANDLING ---
+    // Workday uses consistent data-automation-id attributes (e.g., "formField-experience")
+    // We append this specific ID to the question to give the LLM 100% confidence about the field's purpose.
+    const workdayContainer = element.closest('[data-automation-id^="formField-"]');
+    if (workdayContainer) {
+      const workdayId = workdayContainer.getAttribute('data-automation-id');
+      if (workdayId) {
+        // Append invisible, strong hint for LLM
+        question += ` [Workday ID: ${workdayId}]`;
+      }
+    } else {
+      // Sometimes the element itself has it (e.g. date inputs)
+      const selfId = element.getAttribute('data-automation-id');
+      if (selfId) {
+        question += ` [Workday ID: ${selfId}]`;
+      }
+    }
+
+    // --- SUCCESSFACTORS / GENERIC REPEATER HANDLING ---
+    // Detects "Row number X" labels often found in repeating sections (e.g. Work Experience)
+    // Structure often: <span>Row number 1</span> ... <div input>
+    let rowText = '';
+    const rowHeader = element.closest('.rcmSectionComponent')?.previousElementSibling; // SuccessFactors pattern
+    if (rowHeader && rowHeader.textContent?.includes('Row number')) {
+      rowText = rowHeader.textContent.trim();
+    } else {
+      // Generic check for nearby "Row number" or "Item X"
+      // Look up to 10 levels up (inputs can be deeply nested)
+      let current = element.parentElement;
+      for (let i = 0; i < 10 && current; i++) {
+        const rowSpan = current.querySelector('.rowNumTextAcc') || current.previousElementSibling;
+        if (rowSpan && rowSpan.textContent?.includes('Row number')) {
+          rowText = rowSpan.textContent.trim();
+          break;
+        }
+        current = current.parentElement;
+      }
+    }
+
+    if (rowText) {
+      // Normalize to "[Entry: X]" to be crystal clear for LLM
+      const match = rowText.match(/Row number\s*(\d+)/i);
+      if (match) {
+        const entryNum = match[1];
+        question += ` [Entry: ${entryNum}]`;
+        printLog(`Context added: Entry ${entryNum} for field`);
+      } else {
+        question += ` [${rowText}]`;
+      }
+    }
+    // --------------------------------
+    // --------------------------------
+    // --------------------------------
+
 
     // Check for nearby text
     if (!question) {
@@ -341,9 +538,37 @@ class FormFiller {
           });
         }
       }
+    } else {
+      // Try to find options via aria-controls or aria-owns (for custom listboxes)
+      const controlsId = element.getAttribute('aria-controls') || element.getAttribute('aria-owns');
+      if (controlsId) {
+        // Handle multiple IDs if space separated
+        const ids = controlsId.split(/\s+/);
+        ids.forEach(id => {
+          const container = document.getElementById(id);
+          if (container) {
+            // Try to find options with common selectors
+            const foundOptions = container.querySelectorAll('[role="option"], .option, .wd-list-item, li');
+            foundOptions.forEach((element) => {
+              const opt = element as HTMLElement;
+              // Extract text (exclude hidden/invisible only if strictly hidden)
+              // Note: Some listboxes keep options in DOM but hidden until clicked.
+              // We WANT to extract them for the LLM even if hidden, so it knows what to choose.
+              const text = opt.textContent?.trim();
+              if (text && text.length > 0) {
+                options.push(text);
+              }
+            });
+          }
+        });
+        if (options.length > 0) {
+          printLog(`Extracted ${options.length} options via aria-controls/owns for ${this.extractQuestion(element)}`);
+        }
+      }
     }
 
-    return options;
+    // Deduplicate options
+    return [...new Set(options)];
   }
 
   private findLabelForElement(element: HTMLElement): string | null {
@@ -366,7 +591,8 @@ class FormFiller {
     try {
       const { element, type, question, options } = formElement;
 
-      printLog(`Filling element: ${question || 'Unknown field'}`);
+      printLog(`Filling element: ${question || 'Unknown field'
+        }`);
 
       const enhancedQuestion = this.getEnhancedQuestion(formElement);
 
@@ -382,7 +608,7 @@ class FormFiller {
       );
 
       if (!answer) {
-        printLog(`No answer generated for: ${question}`);
+        printLog(`No answer generated for: ${question} `);
         return;
       }
 
@@ -390,9 +616,9 @@ class FormFiller {
       await this.setElementValue(element, type, answer, options);
       this.filledCount++;
 
-      printLog(`✓ Filled: ${question} with: ${answer}`);
+      printLog(`✓ Filled: ${question} with: ${answer} `);
     } catch (error) {
-      printLog(`Error filling element: ${error}`);
+      printLog(`Error filling element: ${error} `);
     }
   }
 
@@ -419,7 +645,7 @@ class FormFiller {
       }
 
       if (!answer) {
-        printLog(`No answer for: ${question}`);
+        printLog(`No answer for: ${question} `);
         return;
       }
 
@@ -427,9 +653,9 @@ class FormFiller {
       await this.setElementValue(element, type, answer, options);
       this.filledCount++;
 
-      printLog(`✓ Filled: ${question} with: ${answer.substring(0, 50)}`);
+      printLog(`✓ Filled: ${question} with: ${answer.substring(0, 50)} `);
     } catch (error) {
-      printLog(`Error filling element: ${error}`);
+      printLog(`Error filling element: ${error} `);
     }
   }
 
@@ -458,7 +684,9 @@ class FormFiller {
       return 'radio';
     } else if (type === 'checkbox') {
       return 'checkbox';
-    } else if (type === 'select-one' || (type === 'select' && options && options.length > 0)) {
+    } else if (type === 'checkbox') {
+      return 'checkbox';
+    } else if (type === 'select-one' || type === 'combobox' || type === 'listbox' || (type === 'select' && options && options.length > 0)) {
       return 'single_select';
     } else if (type === 'select-multiple') {
       return 'multiple_select';
@@ -507,14 +735,14 @@ class FormFiller {
             numQuestion.includes('price') || numQuestion.includes('cost') ||
             numPlaceholder.includes('donation') || numPlaceholder.includes('amount')) {
             numVal = 10; // Default donation amount
-            printLog(`Using default donation amount: ${numVal}`);
+            printLog(`Using default donation amount: ${numVal} `);
           } else if (numQuestion.includes('quantity') || numQuestion.includes('qty') ||
             numQuestion.includes('count') || numQuestion.includes('number of')) {
             numVal = 1; // Default quantity
-            printLog(`Using default quantity: ${numVal}`);
+            printLog(`Using default quantity: ${numVal} `);
           } else if (numQuestion.includes('age') || numQuestion.includes('years')) {
             numVal = 25; // Default age
-            printLog(`Using default age: ${numVal}`);
+            printLog(`Using default age: ${numVal} `);
           }
         }
 
@@ -535,9 +763,9 @@ class FormFiller {
           input.value = String(numVal);
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
-          printLog(`✓ Set number input to: ${numVal}`);
+          printLog(`✓ Set number input to: ${numVal} `);
         } else {
-          printLog(`⚠ Could not parse number from: ${value}`);
+          printLog(`⚠ Could not parse number from: ${value} `);
         }
         break;
 
@@ -554,7 +782,7 @@ class FormFiller {
           expectedFormat = datePattern.toUpperCase();
         }
 
-        printLog(`Date field: placeholder="${datePlaceholder}", expectedFormat="${expectedFormat}"`);
+        printLog(`Date field: placeholder = "${datePlaceholder}", expectedFormat = "${expectedFormat}"`);
 
         // Parse the date from LLM response
         let parsedDate = this.parseDateToISO(value);
@@ -566,15 +794,15 @@ class FormFiller {
           if (expectedFormat.startsWith('MM') && expectedFormat.includes('DD')) {
             // MM-DD-YYYY or MM/DD/YYYY
             const separator = expectedFormat.includes('/') ? '/' : '-';
-            formattedDate = `${month}${separator}${day}${separator}${year}`;
+            formattedDate = `${month}${separator}${day}${separator}${year} `;
           } else if (expectedFormat.startsWith('DD') && expectedFormat.includes('MM')) {
             // DD-MM-YYYY or DD/MM/YYYY
             const separator = expectedFormat.includes('/') ? '/' : '-';
-            formattedDate = `${day}${separator}${month}${separator}${year}`;
+            formattedDate = `${day}${separator}${month}${separator}${year} `;
           } else if (expectedFormat.startsWith('YYYY')) {
             // YYYY-MM-DD or YYYY/MM/DD
             const separator = expectedFormat.includes('/') ? '/' : '-';
-            formattedDate = `${year}${separator}${month}${separator}${day}`;
+            formattedDate = `${year}${separator}${month}${separator}${day} `;
           }
 
           // For HTML5 date inputs, always use YYYY-MM-DD regardless of placeholder
@@ -588,7 +816,7 @@ class FormFiller {
           input.dispatchEvent(new Event('change', { bubbles: true }));
           printLog(`✓ Set date to: ${input.value} (format: ${expectedFormat})`);
         } else {
-          printLog(`⚠ Could not parse date: ${value}`);
+          printLog(`⚠ Could not parse date: ${value} `);
         }
         break;
 
@@ -599,7 +827,7 @@ class FormFiller {
           const hours = timeMatch[1].padStart(2, '0');
           const mins = timeMatch[2];
           const secs = timeMatch[3] || '00';
-          input.value = `${hours}:${mins}:${secs}`;
+          input.value = `${hours}:${mins}:${secs} `;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
         }
@@ -635,7 +863,7 @@ class FormFiller {
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
         } else {
-          printLog(`⚠ Invalid color format: ${value}`);
+          printLog(`⚠ Invalid color format: ${value} `);
         }
         break;
 
@@ -667,23 +895,23 @@ class FormFiller {
           checkValue === 'checked' || checkValue === 'agree' ||
           checkValue === 'accept';
 
-        printLog(`Checkbox: label="${checkboxLabel.substring(0, 50)}...", isTerms=${isTermsCheckbox}, value="${value}", shouldCheck=${shouldCheck}`);
+        printLog(`Checkbox: label = "${checkboxLabel.substring(0, 50)}...", isTerms = ${isTermsCheckbox}, value = "${value}", shouldCheck = ${shouldCheck} `);
         if (shouldCheck) {
           const checkbox = input as HTMLInputElement;
           checkbox.checked = true;
           checkbox.dispatchEvent(new Event('change', { bubbles: true }));
           checkbox.dispatchEvent(new Event('click', { bubbles: true }));
           checkbox.dispatchEvent(new Event('input', { bubbles: true }));
-          printLog(`✓ Checked checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''}`);
+          printLog(`✓ Checked checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''} `);
         }
         break;
 
       case 'radio':
         // Find matching radio button by matching value to options
-        printLog(`Radio: looking for "${value}" in options: ${JSON.stringify(options)}`);
+        printLog(`Radio: looking for "${value}" in options: ${JSON.stringify(options)} `);
         const name = input.getAttribute('name');
         if (name) {
-          const radios = document.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${name}"]`);
+          const radios = document.querySelectorAll<HTMLInputElement>(`input[type = "radio"][name = "${name}"]`);
           const valLowerRadio = value.toLowerCase().trim();
 
           let foundRadio = false;
@@ -735,7 +963,7 @@ class FormFiller {
           });
 
           if (!foundRadio) {
-            printLog(`⚠ No matching radio option found for: ${value}`);
+            printLog(`⚠ No matching radio option found for: ${value} `);
           }
         }
         break;
@@ -771,7 +999,7 @@ class FormFiller {
           if (optText === valLower || optValue === valLower ||
             optId === valLower || optLabel === valLower || optDataValue === valLower) {
             matchingOptionIndex = i;
-            printLog(`Found exact match at index ${i}: "${opt.text}" (value: "${opt.value}")`);
+            printLog(`Found exact match at index ${i}: "${opt.text}"(value: "${opt.value}")`);
             break;
           }
 
@@ -779,7 +1007,7 @@ class FormFiller {
           if (valLower.length >= 2 && optText.length >= 2) {
             if (optText.includes(valLower) || valLower.includes(optText)) {
               matchingOptionIndex = i;
-              printLog(`Found text match at index ${i}: "${opt.text}" (value: "${opt.value}")`);
+              printLog(`Found text match at index ${i}: "${opt.text}"(value: "${opt.value}")`);
               break;
             }
           }
@@ -788,7 +1016,7 @@ class FormFiller {
           if (valLower.length >= 2 && optValue.length >= 2) {
             if (optValue.includes(valLower) || valLower.includes(optValue)) {
               matchingOptionIndex = i;
-              printLog(`Found value match at index ${i}: "${opt.text}" (value: "${opt.value}")`);
+              printLog(`Found value match at index ${i}: "${opt.text}"(value: "${opt.value}")`);
               break;
             }
           }
@@ -797,7 +1025,7 @@ class FormFiller {
           if (valLower.length >= 2 && optId.length >= 2) {
             if (optId.includes(valLower) || valLower.includes(optId)) {
               matchingOptionIndex = i;
-              printLog(`Found id match at index ${i}: "${opt.text}" (id: "${opt.id}")`);
+              printLog(`Found id match at index ${i}: "${opt.text}"(id: "${opt.id}")`);
               break;
             }
           }
@@ -806,7 +1034,7 @@ class FormFiller {
           if (valLower.length >= 2 && optLabel.length >= 2) {
             if (optLabel.includes(valLower) || valLower.includes(optLabel)) {
               matchingOptionIndex = i;
-              printLog(`Found label match at index ${i}: "${opt.text}" (label: "${opt.label}")`);
+              printLog(`Found label match at index ${i}: "${opt.text}"(label: "${opt.label}")`);
               break;
             }
           }
@@ -820,16 +1048,16 @@ class FormFiller {
           // Fire multiple events to ensure frameworks detect the change
           select.dispatchEvent(new Event('change', { bubbles: true }));
           select.dispatchEvent(new Event('input', { bubbles: true }));
-          printLog(`✓ Set select to option ${matchingOptionIndex}: ${select.options[matchingOptionIndex].text}`);
+          printLog(`✓ Set select to option ${matchingOptionIndex}: ${select.options[matchingOptionIndex].text} `);
         } else {
-          printLog(`⚠ No matching option found for value: ${value}`);
+          printLog(`⚠ No matching option found for value: ${value} `);
         }
         break;
 
       case 'select-multiple':
         const multiSelect = input as HTMLSelectElement;
         const values = value.split(',').map(v => v.trim().toLowerCase()).filter(v => v.length > 0);
-        printLog(`Multi-select: looking for values: ${JSON.stringify(values)}`);
+        printLog(`Multi - select: looking for values: ${JSON.stringify(values)} `);
 
         let selectedCount = 0;
         Array.from(multiSelect.options).forEach((option, idx) => {
@@ -859,22 +1087,211 @@ class FormFiller {
           if (shouldSelect) {
             option.selected = true;
             selectedCount++;
-            printLog(`✓ Selected multi-select option ${idx}: "${option.text}"`);
+            printLog(`✓ Selected multi - select option ${idx}: "${option.text}"`);
           }
         });
 
         multiSelect.dispatchEvent(new Event('change', { bubbles: true }));
         multiSelect.dispatchEvent(new Event('input', { bubbles: true }));
-        printLog(`Multi-select: selected ${selectedCount} options`);
+        printLog(`Multi - select: selected ${selectedCount} options`);
         break;
 
       case 'file':
         // File inputs cannot be programmatically set for security reasons
         printLog('File input cannot be filled programmatically');
         break;
-
       case 'image':
         // Image inputs are typically submit buttons
+        break;
+
+      case 'listbox':
+      case 'combobox':
+        printLog(`Interacting with ${type}: ${value} `);
+        // 1. Click to open dropdown (handle both button and input)
+        input.click();
+        input.dispatchEvent(new Event('focus', { bubbles: true }));
+        input.dispatchEvent(new Event('mousedown', { bubbles: true }));
+
+        // Wait for options to appear
+        await this.delay(500);
+
+        // 2. Find options. 
+        // For Workday (listbox), options often have role="option" or are in a container with role="listbox"
+        // For React Select (combobox), options are in a portal
+        const optionSelectors = [
+          '[role="option"]',
+          '[class*="option"]',
+          'li[role="presentation"]', // Some frameworks use lists
+          '.active-result', // Chosen/Select2
+          '.wd-list-item' // Workday specific
+        ];
+
+        const possibleOptions = document.querySelectorAll(optionSelectors.join(', '));
+        printLog(`Found ${possibleOptions.length} possible options in DOM`);
+
+        let bestMatch: HTMLElement | null = null;
+        let matchIndex = -1;
+        const targetVal = value.toLowerCase().trim();
+
+        // Filter and find match
+        for (let i = 0; i < possibleOptions.length; i++) {
+          const opt = possibleOptions[i] as HTMLElement;
+          // Skip invisible options
+          if (opt.hidden || opt.style.display === 'none' || opt.style.visibility === 'hidden') continue;
+
+          const optText = (opt.textContent || '').toLowerCase().trim();
+
+          // Exact match
+          if (optText === targetVal) {
+            bestMatch = opt;
+            matchIndex = i;
+            printLog(`Found exact ${type} option match: "${opt.textContent}"`);
+            break;
+          }
+
+          // Partial match
+          if (targetVal.length > 2 && optText.length > 2) {
+            if (optText.includes(targetVal) || targetVal.includes(optText)) {
+              bestMatch = opt;
+              matchIndex = i;
+              printLog(`Found partial ${type} option match: "${opt.textContent}"`);
+              break;
+            }
+          }
+        }
+
+        if (bestMatch) {
+          // Realistic click sequence
+          await dispatchRealisticEvents(bestMatch, 'click');
+          await sleep(randomDelay(50, 100));
+          printLog(`✓ Clicked ${type} option: ${bestMatch.textContent} `);
+        } else {
+          // Fallback: If no option matches, scrape visible options and ASK LLM AGAIN
+          // This is critical for listboxes where options are dynamic/unknown initially
+          if (possibleOptions.length > 0) {
+            printLog(`⚠ Initial match failed.Re - asking LLM with ${possibleOptions.length} visible options...`);
+
+            // Extract text from visible options
+            const visibleOptions: string[] = [];
+            const visibleOptionElements: HTMLElement[] = [];
+
+            possibleOptions.forEach((element) => {
+              const opt = element as HTMLElement;
+              if (!opt.hidden && opt.style.display !== 'none' && opt.style.visibility !== 'hidden') {
+                const text = opt.textContent?.trim();
+                if (text) {
+                  visibleOptions.push(text);
+                  visibleOptionElements.push(opt);
+                }
+              }
+            });
+
+            if (visibleOptions.length > 0) {
+              // Get new answer from LLM with specific options
+              const question = this.extractQuestion(input); // Re-extract question
+              const userInfo = personals.user_information_all || JSON.stringify(personals);
+              const newAnswer = await llmManager.getAnswer(
+                question,
+                visibleOptions,
+                'single_select', // Treat as single select now that we have options
+                undefined,
+                userInfo,
+                JSON.stringify(personals)
+              );
+
+              printLog(`LLM provided new answer based on visible options: "${newAnswer}"`);
+
+              if (newAnswer) {
+                // VALIDATION: Check if the new answer makes sense for the field type
+                const question = this.extractQuestion(input);
+                const questionLower = question.toLowerCase();
+                const newAnswerClean = newAnswer.trim();
+
+                // Detect if options don't match field type (e.g., years in Country field)
+                const isYearField = questionLower.includes('year') || questionLower.includes('start year') || questionLower.includes('end year');
+                const isCountryField = questionLower.includes('country') || questionLower.includes('state') || questionLower.includes('province');
+                const isAreaField = questionLower.includes('area of study') || questionLower.includes('field') || questionLower.includes('functional area');
+
+                // Check if newAnswer looks like a year (4 digits)
+                const looksLikeYear = /^\d{4}$/.test(newAnswerClean);
+
+                // SKIP if there's a type mismatch
+                if ((isCountryField || isAreaField) && looksLikeYear) {
+                  printLog(`⚠ SKIPPING mismatched option: "${newAnswerClean}" looks like a year but field is "${question}"`);
+                  // Don't click anything, fall through to typing
+                } else if (isYearField && !looksLikeYear && visibleOptions.length > 50) {
+                  // If it's a year field but answer doesn't look like a year, and there are many options (likely years), be cautious
+                  printLog(`⚠ Year field "${question}" but answer "${newAnswerClean}" doesn't look like a year. Skipping.`);
+                } else {
+                  // Validation passed, proceed with matching
+                  const newTargetVal = newAnswer.toLowerCase().trim();
+                  let newBestMatch: HTMLElement | null = null;
+
+                  for (let i = 0; i < visibleOptionElements.length; i++) {
+                    const opt = visibleOptionElements[i];
+                    const optText = (opt.textContent || '').toLowerCase().trim();
+
+                    if (optText === newTargetVal || (optText.includes(newTargetVal) && newTargetVal.length > 3)) {
+                      newBestMatch = opt;
+                      break;
+                    }
+                  }
+
+                  if (newBestMatch) {
+                    // Realistic click sequence
+                    await dispatchRealisticEvents(newBestMatch, 'click');
+                    await sleep(randomDelay(50, 100));
+                    printLog(`✓ Clicked ${type} option(after re - ask): ${newBestMatch.textContent} `);
+                    return; // Success!
+                  }
+                }
+              }
+            }
+          }
+
+          // If fallback failed, try typing (only for combobox inputs)
+          if (type === 'combobox' && input instanceof HTMLInputElement) {
+            printLog(`⚠ No combobox option found for "${value}".Trying to type it...`);
+            input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+          } else {
+            printLog(`⚠ No option found for ${type} "${value}" even after re - asking.`);
+          }
+        }
+        break;
+
+
+      case 'ui5-date':
+        // Handle UI5 Date Picker
+        // Convert to MM/DD/YYYY if possible (standard US format often required by these widgets)
+        // Try to respect format-pattern if present
+        let dateValue = value;
+        const formatPattern = element.getAttribute('format-pattern') || 'MM/dd/yyyy'; // Default to US format usually
+
+        // If value is YYYY-MM (from our persona), and format is MM/dd/yyyy
+        if (value.match(/^\d{4}-\d{2}$/)) {
+          const parts = value.split('-');
+          // Default to 1st of the month
+          dateValue = `${parts[1]}/01/${parts[0]}`;
+        } else if (value.match(/^\d{4}-\d{2}-\d{2}$/)) { // YYYY-MM-DD
+          const parts = value.split('-');
+          dateValue = `${parts[1]}/${parts[2]}/${parts[0]}`;
+        }
+
+        printLog(`Setting UI5 Date Picker value to: ${dateValue}`);
+
+        // Try setting value property
+        if ('value' in element) {
+          (element as any).value = dateValue;
+        } else {
+          element.setAttribute('value', dateValue);
+        }
+
+        // Dispatch events to trigger internal logic
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
         break;
 
       default:
@@ -893,16 +1310,16 @@ class FormFiller {
     // Try common formats
     const datePatterns = [
       // yyyy-mm-dd (already ISO)
-      { regex: /^(\d{4})-(\d{2})-(\d{2})$/, format: (m: RegExpMatchArray) => `${m[1]}-${m[2]}-${m[3]}` },
+      { regex: /^(\d{4})-(\d{2})-(\d{2})$/, format: (m: RegExpMatchArray) => `${m[1]} -${m[2]} -${m[3]} ` },
       // mm/dd/yyyy or mm-dd-yyyy
-      { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` },
+      { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]} -${m[1].padStart(2, '0')} -${m[2].padStart(2, '0')} ` },
       // dd/mm/yyyy (European)
-      { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` },
+      { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]} -${m[2].padStart(2, '0')} -${m[1].padStart(2, '0')} ` },
       // Month dd, yyyy
       {
         regex: /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (\d{1,2}),? (\d{4})$/i, format: (m: RegExpMatchArray) => {
           const months: { [key: string]: string } = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
-          return `${m[3]}-${months[m[1].toLowerCase().substring(0, 3)]}-${m[2].padStart(2, '0')}`;
+          return `${m[3]} -${months[m[1].toLowerCase().substring(0, 3)]} -${m[2].padStart(2, '0')} `;
         }
       },
     ];

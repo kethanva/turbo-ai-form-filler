@@ -8,6 +8,15 @@
     "storage",
     "scripting"
   ],
+  "commands": {
+    "fill-form": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+F",
+        "mac": "Command+Shift+F"
+      },
+      "description": "Fill form with AI"
+    }
+  },
   "host_permissions": [
     "https://api.groq.com/*",
     "https://router.huggingface.co/*"

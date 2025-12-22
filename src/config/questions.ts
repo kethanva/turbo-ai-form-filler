@@ -41,6 +41,13 @@ Respond concisely based on the type of question:
     - If the question is having years then answer with **1** or **0** as appropriate but don't add any non numeric characters.
     - If the question is having months then answer with **1** or **0** as appropriate but don't add any non numeric characters.
     - If the question is about experience in something but without years or months in the question then answer with **Yes** or **No** as appropriate but don't add any non boolean characters.
+13. **REPEATING SECTIONS (Work Experience / Education):**
+    - If the question contains **[Entry: X]** (e.g., "Employer [Entry: 1]"), look for the X-th item in the **Experience** or **Education** list in the User Information.
+    - **Use ONLY the data from that specific entry** to answer the question.
+    - If the question asks for "Employer" or "Company" for [Entry: 1], provide the company name from the 1st experience block. For [Entry: 2], provide the 2nd.
+    - Similarly for Job Title, Start Date, End Date, Description, etc.
+    - **Do NOT combine** data from multiple entries.
+    - If the entry index (X) is missing or out of bounds, use the **1st entry** as a fallback.
 Here is user information to answer the questions if needed:
 **User Information:** 
 {}

@@ -175,9 +175,56 @@ export class LLMManager {
     // Build a combined prompt for all questions
     const userInfo = userInformationAll || configContext || JSON.stringify(personals);
 
-    let batchPrompt = `You are a helpful assistant filling out a form. Answer each question based on this user information:
+    // Explicitly add structured data for repeaters
+    const experienceData = JSON.stringify(personals.experience_details || [], null, 2);
+    const educationData = JSON.stringify(personals.education_details || [], null, 2);
 
+    let batchPrompt = `You are a helpful assistant filling out a form.
+
+=== PRIMARY DATA SOURCE (USE THIS FOR [Entry: X] QUESTIONS) ===
+
+WORK EXPERIENCE ARRAY (experience_details):
+${experienceData}
+
+EDUCATION ARRAY (education_details):
+${educationData}
+
+=== CRITICAL INSTRUCTIONS ===
+
+**ARRAY INDEXING (READ THIS CAREFULLY)**:
+JavaScript arrays start at index 0. To find the correct entry:
+- [Entry: 1] = experience_details[0] or education_details[0]
+- [Entry: 2] = experience_details[1] or education_details[1]
+- [Entry: 3] = experience_details[2] or education_details[2]  
+- [Entry: 4] = experience_details[3] or education_details[3]
+- [Entry: 5] = experience_details[4] or education_details[4]
+- [Entry: 6] = experience_details[5] or education_details[5]
+**Formula: array[Entry_Number - 1]**
+
+1. **FOR ANY QUESTION WITH [Entry: X]**: Extract ONLY from the arrays above.
+   - "Start Date [Entry: 6]" → experience_details[5].start → "2008-12" → "12/01/2008"
+   - "Employer [Entry: 6]" → experience_details[5].companyKey → "mphasis" (NOT "tavant"!)
+   - "End Year [Entry: 1]" → education_details[0].completion → "2021-10" → "2021"
+   - DO NOT use any data from the "General Context" section below
+   - DO NOT use highlights, industry, description, or any text data
+
+2. **DATE FIELDS**: For "Start Date" or "End Date" questions:
+   - Extract from the .start or .end field in the JSON array
+   - Convert YYYY-MM to MM/01/YYYY (e.g., "2008-12" → "12/01/2008")
+   - If "Present", use "12/31/2025"
+
+3. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
+   - Extract from the .start or .completion field in the JSON array
+   - Return only the year portion (e.g., "2021-10" → "2021")
+
+4. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
+
+5. **IF [Entry: X] is missing**: Return "N/A"
+
+=== General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
+
+===================================================================
 
 Please answer ALL of the following questions. Format your response as:
 Q1: [your answer]
