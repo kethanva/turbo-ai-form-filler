@@ -232,12 +232,16 @@ JavaScript arrays start at index 0. To find the correct entry:
    **EXAMPLES**:
    - "Location [Entry: 1]" → "Bangalore, Karnataka, India"
    - "Location [Entry: 2]" → "Bangalore, Karnataka, India"
-   - "Location [Entry: 3]" → "Bangalore, Karnataka, India"
-   - "Location [Entry: 6]" → "Bangalore, Karnataka, India"
 
-5. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
+5. **NOTICE PERIOD / SALARY FIELDS**:
+    - "Notice Period" -> Extract from "Notice Period" or "soon_join_us" (e.g. "60 days")
+    - "Current Salary" / "CTC" -> Extract from "Current CTC" (e.g. "80000")
+    - "Expected Salary" -> Extract from "Expected CTC" (e.g. "85000")
+    - **CRITICAL** : return only the number if the question asks for number.
 
-6. **IF [Entry: X] is missing**: Return "N/A"
+6. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
+
+7. **IF [Entry: X] is missing**: Return "N/A"
 
 === General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
