@@ -12,11 +12,10 @@ interface FormElement {
   options?: string[];
 }
 
-<<<<<<< HEAD
-// === REALISTIC EVENT HELPERS TO BYPASS BOT DETECTION ===
+// === HELPER FUNCTIONS ===
 
 /**
- * Sleep for random duration to mimic human behavior
+ * Sleep utility
  */
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -35,7 +34,7 @@ function randomDelay(min: number, max: number): number {
 function getElementCenter(element: HTMLElement): { x: number; y: number } {
   const rect = element.getBoundingClientRect();
   return {
-    x: rect.left + rect.width / 2 + (Math.random() - 0.5) * 10, // Add slight randomness
+    x: rect.left + rect.width / 2 + (Math.random() - 0.5) * 10,
     y: rect.top + rect.height / 2 + (Math.random() - 0.5) * 10
   };
 }
@@ -72,36 +71,19 @@ function createInputEvent(data: string | null = null): InputEvent {
 }
 
 /**
- * Create realistic KeyboardEvent
- */
-function createKeyboardEvent(type: string, key: string = ''): KeyboardEvent {
-  return new KeyboardEvent(type, {
-    bubbles: true,
-    cancelable: true,
-    key: key,
-    code: key ? `Key${key.toUpperCase()}` : '',
-    charCode: key ? key.charCodeAt(0) : 0,
-    keyCode: key ? key.charCodeAt(0) : 0
-  });
-}
-
-/**
  * Dispatch events in realistic sequence with delays
- * This mimics how a real user interacts with form fields
  */
 async function dispatchRealisticEvents(
   element: HTMLElement,
   eventType: 'input' | 'click' | 'change'
 ): Promise<void> {
   if (eventType === 'input') {
-    // Realistic input sequence: focus -> input ->  change
     element.dispatchEvent(createMouseEvent('focus', element));
     await sleep(randomDelay(10, 30));
     element.dispatchEvent(createInputEvent());
     await sleep(randomDelay(10, 30));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   } else if (eventType === 'click') {
-    // Realistic click sequence: mousedown -> mouseup -> click
     element.dispatchEvent(createMouseEvent('mousedown', element));
     await sleep(randomDelay(50, 100));
     element.dispatchEvent(createMouseEvent('mouseup', element));
@@ -110,29 +92,14 @@ async function dispatchRealisticEvents(
   } else if (eventType === 'change') {
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }
-=======
+}
+
 /**
- * Detect if current page is Workday (needs delays for bot detection evasion)
+ * Check if on Workday domain
  */
 function isWorkdayDomain(): boolean {
   const hostname = window.location.hostname.toLowerCase();
   return hostname.includes('workday.com') || hostname.includes('myworkday.com');
-}
-
-/**
- * Sleep utility for delays
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
- * Get random delay - returns actual delay only if on Workday, otherwise 0
- */
-function getConditionalDelay(min: number, max: number): number {
-  if (!isWorkdayDomain()) return 0; // No delay for non-Workday sites
-  return Math.floor(Math.random() * (max - min + 1)) + min;
->>>>>>> master
 }
 
 class FormFiller {
@@ -219,21 +186,21 @@ class FormFiller {
       } else {
         // SEQUENTIAL MODE: One LLM call per field (more accurate)
         const delayMessage = isWorkdayDomain()
-          ? " with delays for Workday detection evasion"
+          ? " with anti-detection delays"
           : "";
         printLog(`Using SEQUENTIAL mode (more accurate)${delayMessage}`);
 
         for (const formElement of formElements) {
           await this.fillElement(formElement);
-<<<<<<< HEAD
-          await sleep(randomDelay(80, 200)); // Human-like delay between fields
-=======
-          // Conditional delay: 500-1500ms on Workday, 0ms elsewhere
-          const delay = getConditionalDelay(500, 1500);
-          if (delay > 0) {
+
+          // Conditional delay: Slow on Workday to avoid bot detection, fast elsewhere
+          if (isWorkdayDomain()) {
+            const delay = randomDelay(500, 1500); // 0.5-1.5 seconds on Workday
+            printLog(`⏱ Workday delay: ${delay}ms`);
             await sleep(delay);
+          } else {
+            await this.delay(100); // Normal speed for other sites
           }
->>>>>>> master
         }
       }
 
