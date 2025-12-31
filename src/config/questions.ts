@@ -48,7 +48,9 @@ Respond concisely based on the type of question:
     - Similarly for Job Title, Start Date, End Date, Description, etc.
     - **Do NOT combine** data from multiple entries.
     - If the entry index (X) is missing or out of bounds, use the **1st entry** as a fallback.
-    - **CRITICAL FOR LOCATION**: If the question asks for "Location" or "Work Location" for ANY [Entry: X], **ALWAYS** return "Bangalore, Karnataka, India". Do NOT use the Company Name.
+    - **CRITICAL FOR LOCATION**: 
+      - If the question asks for "Location" or "Work Location", **ALWAYS** return "Bangalore, Karnataka, India".
+      - **EXCEPTION**: If the question asks for "CTC", "Salary", "Compensation", ignore this location rule and provide the numeric salary.
 Here is user information to answer the questions if needed:
 **User Information:** 
 {}

@@ -146,17 +146,37 @@ class FormFiller {
   private findFormElements(): FormElement[] {
     const elements: FormElement[] = [];
 
-    // Find all input elements
-    const inputs = document.querySelectorAll('input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget');
-    printLog(`Found ${inputs.length} total input/textarea/select/button elements`);
+    // Define the selector for form elements
+    const formElementSelector = 'input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget, spl-input, spl-textarea, spl-select, spl-autocomplete, spl-phone-field, spl-checkbox, spl-radio';
+
+    // 1. Find elements in Light DOM
+    const lightDomInputs = Array.from(document.querySelectorAll(formElementSelector));
+
+    // 2. Find elements in Shadow DOM of specific containers (e.g., SmartRecruiters screening form)
+    const shadowInputs: Element[] = [];
+    const shadowHosts = document.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
+
+    shadowHosts.forEach(host => {
+      if (host.shadowRoot) {
+        const found = host.shadowRoot.querySelectorAll(formElementSelector);
+        shadowInputs.push(...Array.from(found));
+        printLog(`Found ${found.length} elements in Shadow DOM of ${host.tagName}`);
+      }
+    });
+
+    // Combine all found inputs
+    const inputs = [...lightDomInputs, ...shadowInputs];
+    printLog(`Found ${inputs.length} total form elements (Light DOM: ${lightDomInputs.length}, Shadow DOM: ${shadowInputs.length})`);
 
     inputs.forEach((element) => {
       const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement | HTMLElement;
 
-      // Skip hidden, submit, button elements (UNLESS it's a listbox button)
+      // Skip hidden, submit, button elements (UNLESS it's a listbox button or spl-element)
       const isListbox = input.getAttribute('aria-haspopup') === 'listbox';
+      const tagName = input.tagName.toLowerCase();
+      const isSplElement = tagName.startsWith('spl-');
 
-      if (!isListbox) {
+      if (!isListbox && !isSplElement) {
         // Safe check for type property
         const inputType = (input as any).type;
         if (inputType === 'hidden' ||
@@ -175,17 +195,23 @@ class FormFiller {
       }
 
       // Skip disabled or readonly inputs
-      if ((input as HTMLInputElement).disabled || (input as HTMLInputElement).readOnly || input.getAttribute('readonly') !== null) {
+      if ((input as any).disabled || (input as any).readOnly || input.getAttribute('readonly') !== null) {
         return;
       }
 
       // Skip hidden elements (CSS hidden or HTML hidden attribute)
-      if (input.hidden ||
-        input.getAttribute('hidden') !== null ||
-        (input.getAttribute('aria-hidden') === 'true' && !isListbox && input.tagName.toLowerCase() !== 'ui5-date-picker-xweb-calendar-widget') || // Listboxes might be complex, be careful
-        getComputedStyle(input).display === 'none' ||
-        getComputedStyle(input).visibility === 'hidden') {
-        return;
+      // BUT: Skip these checks for spl-* elements (custom components may have non-standard styling)
+      if (!isSplElement) {
+        if (input.hidden ||
+          input.getAttribute('hidden') !== null ||
+          (input.getAttribute('aria-hidden') === 'true' && !isListbox && input.tagName.toLowerCase() !== 'ui5-date-picker-xweb-calendar-widget') ||
+          getComputedStyle(input).display === 'none' ||
+          getComputedStyle(input).visibility === 'hidden') {
+          return;
+        }
+      } else {
+        // For spl-* elements, log that we found one
+        printLog(`[SPL] Found ${tagName}: id=${input.id || 'none'}, label=${input.getAttribute('label') || 'none'}`);
       }
 
       // FORCE FILL MODE: Don't skip based on existing values
@@ -216,6 +242,25 @@ class FormFiller {
       } else if (input.getAttribute('role') === 'combobox') {
         type = 'combobox';
         printLog(`Found combobox: ${question}`);
+      } else if (tagName.startsWith('spl-')) {
+        // Determine type for spl-elements
+        if (tagName === 'spl-select') {
+          type = 'listbox'; // Use listbox logic (click and find options)
+        } else if (tagName === 'spl-autocomplete') {
+          type = 'combobox'; // Use combobox logic (type or click)
+        } else if (tagName === 'spl-phone-field') {
+          type = 'tel';
+        } else if (tagName === 'spl-textarea') {
+          type = 'textarea';
+        } else if (tagName === 'spl-checkbox') {
+          type = 'checkbox';
+        } else if (tagName === 'spl-radio') {
+          type = 'radio';
+        } else {
+          // spl-input, check generic type attribute
+          type = input.getAttribute('type') || 'text';
+        }
+        printLog(`Found custom element ${tagName}: ${question} (type: ${type})`);
       }
 
       elements.push({
@@ -295,15 +340,22 @@ class FormFiller {
   }
 
   // Helper to check if element should be skipped
-  private shouldSkipElement(input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement): boolean {
-    // Skip hidden, submit, button elements
-    if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button' ||
-      input.type === 'reset' || input.type === 'image') {
-      return true;
+  private shouldSkipElement(input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | HTMLElement): boolean {
+    const tagName = input.tagName.toLowerCase();
+
+    // Convert to any to access properties safely
+    const el = input as any;
+
+    // Skip hidden, submit, button elements (standard inputs only)
+    if (!tagName.startsWith('spl-')) {
+      if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button' ||
+        el.type === 'reset' || el.type === 'image') {
+        return true;
+      }
     }
 
     // Skip disabled or readonly
-    if (input.disabled || (input as HTMLInputElement).readOnly) {
+    if ((input as any).disabled || (input as any).readOnly) {
       return true;
     }
 
@@ -321,6 +373,29 @@ class FormFiller {
   private extractQuestion(element: HTMLElement): string {
     // Try to find associated label
     let question = '';
+
+    // Check for "label" attribute (Common in Web Components like spl-input)
+    if (element.hasAttribute('label')) {
+      question = element.getAttribute('label') || '';
+      if (question) {
+        // printLog(`Found label attribute on ${element.tagName}: ${question}`);
+      }
+    }
+
+    // For spl-checkbox and similar, check for slot content or inner text
+    if (!question && element.tagName.toLowerCase().startsWith('spl-')) {
+      // Check for slot content (e.g., <div slot="label-content">...</div>)
+      const slotContent = element.querySelector('[slot="label-content"], [slot="label"]');
+      if (slotContent) {
+        question = slotContent.textContent?.trim() || '';
+      }
+      // Fallback to innerText/textContent
+      if (!question) {
+        question = element.textContent?.trim() || '';
+      }
+    }
+
+    if (question) return question;
 
     // Check for id and associated label
     if (element.id) {
@@ -357,6 +432,25 @@ class FormFiller {
 
       if (ariaLabel && !isGeneric) {
         question = ariaLabel;
+      }
+    }
+
+    // 0. Check DIRECT PREVIOUS SIBLING (Common for h3/h4/div labels + input pattern)
+    // This fixes cases where inputs are siblings to their headers (e.g. <h3 class="polygot">Name</h3><input>)
+    if (!question) {
+      const prev = element.previousElementSibling;
+      if (prev && ['LABEL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'SPAN', 'DIV', 'P'].includes(prev.tagName)) {
+        // Skip typically non-label elements (dividers, error containers)
+        const className = prev.className.toLowerCase();
+        const isIgnored = className.includes('divider') ||
+          className.includes('error') ||
+          className.includes('clear') ||
+          (prev.textContent || '').trim().length === 0;
+
+        if (!isIgnored) {
+          question = prev.textContent?.trim() || '';
+          // printLog(`Found label via previous sibling ${prev.tagName}: ${question}`);
+        }
       }
     }
 
@@ -420,53 +514,69 @@ class FormFiller {
     // Supports multiple patterns:
     // - SuccessFactors: "Row number 1"
     // - Workday: "Work Experience 1", "Education 1", etc.
+    // - Array-indexed IDs: experienceData[0].title, educationData[1].school
     let rowText = '';
-    const rowHeader = element.closest('.rcmSectionComponent')?.previousElementSibling; // SuccessFactors pattern
-    if (rowHeader && rowHeader.textContent?.includes('Row number')) {
-      rowText = rowHeader.textContent.trim();
-    } else {
-      // Check for Workday patterns
-      // Method 1: Use aria-labelledby (most reliable for Workday)
-      let current = element.parentElement;
-      for (let i = 0; i < 20 && current && !rowText; i++) {
-        const labelId = current.getAttribute('aria-labelledby');
-        if (labelId) {
-          const labelElement = document.getElementById(labelId);
-          if (labelElement) {
-            const labelText = labelElement.textContent?.trim() || '';
-            const workdayMatch = labelText.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
-            if (workdayMatch) {
-              rowText = labelText;
-              printLog(`Found Workday section via aria-labelledby: ${rowText}`);
-              break;
+    let entryType = ''; // To track what type of entry this is (experience, education, etc.)
+
+    // Method 0: Check for array-indexed element IDs (e.g., experienceData[0].title)
+    const elementId = element.id || '';
+    const arrayIndexMatch = elementId.match(/(experience|education|employment|work|job|school)Data?\[(\d+)\]/i);
+    if (arrayIndexMatch) {
+      entryType = arrayIndexMatch[1]; // e.g., "experience", "education"
+      const entryNum = parseInt(arrayIndexMatch[2]) + 1; // Convert 0-indexed to 1-indexed
+      question += ` [${entryType.charAt(0).toUpperCase() + entryType.slice(1)} Entry: ${entryNum}]`;
+      printLog(`Context added: ${entryType} Entry ${entryNum} from array-indexed ID`);
+    }
+
+    // Only do other detection if we didn't find an array index
+    if (!arrayIndexMatch) {
+      const rowHeader = element.closest('.rcmSectionComponent')?.previousElementSibling; // SuccessFactors pattern
+      if (rowHeader && rowHeader.textContent?.includes('Row number')) {
+        rowText = rowHeader.textContent.trim();
+      } else {
+        // Check for Workday patterns
+        // Method 1: Use aria-labelledby (most reliable for Workday)
+        let current = element.parentElement;
+        for (let i = 0; i < 20 && current && !rowText; i++) {
+          const labelId = current.getAttribute('aria-labelledby');
+          if (labelId) {
+            const labelElement = document.getElementById(labelId);
+            if (labelElement) {
+              const labelText = labelElement.textContent?.trim() || '';
+              const workdayMatch = labelText.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+              if (workdayMatch) {
+                rowText = labelText;
+                printLog(`Found Workday section via aria-labelledby: ${rowText}`);
+                break;
+              }
             }
           }
-        }
-        current = current.parentElement;
-      }
-
-      // Method 2: Check text content (fallback)
-      if (!rowText) {
-        current = element.parentElement;
-        for (let i = 0; i < 15 && current; i++) {
-          const textContent = current.textContent || '';
-
-          // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
-          const workdayMatch = textContent.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
-          if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
-            rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
-            printLog(`Found Workday section: ${rowText}`);
-            break;
-          }
-
-          // SuccessFactors/Generic: "Row number X"
-          const rowSpan = current.querySelector('.rowNumTextAcc') || current.previousElementSibling;
-          if (rowSpan && rowSpan.textContent?.includes('Row number')) {
-            rowText = rowSpan.textContent.trim();
-            break;
-          }
-
           current = current.parentElement;
+        }
+
+        // Method 2: Check text content (fallback)
+        if (!rowText) {
+          current = element.parentElement;
+          for (let i = 0; i < 15 && current; i++) {
+            const textContent = current.textContent || '';
+
+            // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
+            const workdayMatch = textContent.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+            if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
+              rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
+              printLog(`Found Workday section: ${rowText}`);
+              break;
+            }
+
+            // SuccessFactors/Generic: "Row number X"
+            const rowSpan = current.querySelector('.rowNumTextAcc') || current.previousElementSibling;
+            if (rowSpan && rowSpan.textContent?.includes('Row number')) {
+              rowText = rowSpan.textContent.trim();
+              break;
+            }
+
+            current = current.parentElement;
+          }
         }
       }
     }
@@ -676,10 +786,27 @@ class FormFiller {
     const input = element as HTMLInputElement;
     let enhancedQuestion = question || 'Form field';
 
-    // For date fields, detect expected format from placeholder
+    // For date fields, detect expected format from placeholder or question context
     if (type === 'date' || type === 'text') {
       const placeholder = input.getAttribute('placeholder') || '';
-      if (placeholder && (
+      const questionLower = question?.toLowerCase() || '';
+
+      // Workday-specific: Start/End dates often use MM/YYYY format
+      const isWorkdayMonthYearField =
+        (questionLower.includes('start') || questionLower.includes('end') ||
+          questionLower.includes('from') || questionLower.includes('to')) &&
+        (questionLower.includes('date') || questionLower.includes('month') ||
+          placeholder.toUpperCase().includes('MM') && !placeholder.toUpperCase().includes('DD'));
+
+      // Check if placeholder explicitly shows MM/YYYY format (no day component)
+      const isMonthYearPlaceholder = placeholder &&
+        placeholder.toUpperCase().includes('MM') &&
+        placeholder.toUpperCase().includes('YYYY') &&
+        !placeholder.toUpperCase().includes('DD');
+
+      if (isMonthYearPlaceholder || isWorkdayMonthYearField) {
+        enhancedQuestion = `${enhancedQuestion} (format: MM/YYYY)`;
+      } else if (placeholder && (
         placeholder.toUpperCase().includes('MM') ||
         placeholder.toUpperCase().includes('DD') ||
         placeholder.toUpperCase().includes('YYYY') ||
@@ -722,6 +849,61 @@ class FormFiller {
       case 'search':
       case 'tel':
       case 'password':
+        // SPECIAL HANDLING: Workday date spinbuttons (Month/Year)
+        const spinRole = input.getAttribute('role');
+        const ariaLabel = input.getAttribute('aria-label') || '';
+
+        if (spinRole === 'spinbutton' && (ariaLabel === 'Month' || ariaLabel === 'Year')) {
+          // This is a Workday date spinbutton - parse MM/YYYY format
+          const dateMatch = value.match(/(\d{1,2})\/(\d{4})/);
+          if (dateMatch) {
+            const month = parseInt(dateMatch[1]);
+            const year = parseInt(dateMatch[2]);
+
+            // Find the parent dateInputWrapper to locate both Month and Year inputs
+            const dateWrapper = input.closest('[data-automation-id="dateInputWrapper"]');
+            if (dateWrapper) {
+              const monthInput = dateWrapper.querySelector('[data-automation-id="dateSectionMonth-input"]') as HTMLInputElement;
+              const yearInput = dateWrapper.querySelector('[data-automation-id="dateSectionYear-input"]') as HTMLInputElement;
+
+              if (monthInput && yearInput) {
+                // Set both values
+                monthInput.value = String(month);
+                monthInput.setAttribute('aria-valuenow', String(month));
+                monthInput.setAttribute('aria-valuetext', String(month));
+                monthInput.dispatchEvent(new Event('input', { bubbles: true }));
+                monthInput.dispatchEvent(new Event('change', { bubbles: true }));
+                monthInput.dispatchEvent(new Event('blur', { bubbles: true }));
+
+                yearInput.value = String(year);
+                yearInput.setAttribute('aria-valuenow', String(year));
+                yearInput.setAttribute('aria-valuetext', String(year));
+                yearInput.dispatchEvent(new Event('input', { bubbles: true }));
+                yearInput.dispatchEvent(new Event('change', { bubbles: true }));
+                yearInput.dispatchEvent(new Event('blur', { bubbles: true }));
+
+                printLog(`✓ Set Workday date spinbuttons: Month=${month}, Year=${year}`);
+                break; // Exit the switch
+              }
+            }
+
+            // Fallback: Set just this spinbutton with the appropriate part
+            if (ariaLabel === 'Month') {
+              input.value = String(month);
+              input.setAttribute('aria-valuenow', String(month));
+              printLog(`✓ Set Month spinbutton: ${month}`);
+            } else if (ariaLabel === 'Year') {
+              input.value = String(year);
+              input.setAttribute('aria-valuenow', String(year));
+              printLog(`✓ Set Year spinbutton: ${year}`);
+            }
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            break;
+          }
+        }
+
+        // Regular text input handling
         // Check for maxlength
         const maxLen = input.getAttribute('maxlength');
         let textValue = value;
@@ -909,16 +1091,53 @@ class FormFiller {
 
         printLog(`Checkbox: label = "${checkboxLabel.substring(0, 50)}...", isTerms = ${isTermsCheckbox}, value = "${value}", shouldCheck = ${shouldCheck} `);
         if (shouldCheck) {
-          const checkbox = input as HTMLInputElement;
-          checkbox.checked = true;
-          checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-          checkbox.dispatchEvent(new Event('click', { bubbles: true }));
-          checkbox.dispatchEvent(new Event('input', { bubbles: true }));
-          printLog(`✓ Checked checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''} `);
+          const tagNameLower = element.tagName.toLowerCase();
+          if (tagNameLower === 'spl-checkbox') {
+            // SmartRecruiters custom checkbox - set value attribute and click
+            element.setAttribute('value', 'true');
+            element.setAttribute('checked', '');
+            element.click(); // Trigger the component's internal click handler
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            printLog(`✓ Checked spl-checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''} `);
+          } else {
+            const checkbox = input as HTMLInputElement;
+            checkbox.checked = true;
+            checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            checkbox.dispatchEvent(new Event('click', { bubbles: true }));
+            checkbox.dispatchEvent(new Event('input', { bubbles: true }));
+            printLog(`✓ Checked checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''} `);
+          }
         }
         break;
 
       case 'radio':
+        // SPECIAL HANDLING: spl-radio (SmartRecruiters custom web component)
+        if (element.tagName.toLowerCase() === 'spl-radio') {
+          const optionText = (element.querySelector('[slot="label"], [slot="label-content"]')?.textContent || element.textContent || '').trim();
+          const optionValue = element.getAttribute('value') || '';
+
+          printLog(`Checking spl-radio: option="${optionText}", value="${optionValue}" vs target="${value}"`);
+
+          const isMatch =
+            (optionText && value.toLowerCase().includes(optionText.toLowerCase())) ||
+            (optionText && optionText.toLowerCase().includes(value.toLowerCase())) ||
+            (optionValue && value === optionValue) ||
+            (value.toLowerCase() === 'yes' && (optionText.toLowerCase() === 'yes' || optionValue === '1' || optionValue === 'true')) ||
+            (value.toLowerCase() === 'no' && (optionText.toLowerCase() === 'no' || optionValue === '0' || optionValue === 'false'));
+
+          if (isMatch) {
+            element.setAttribute('checked', '');
+            element.setAttribute('aria-checked', 'true');
+            element.click();
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            printLog(`✓ Selected spl-radio: "${optionText}"`);
+            return; // Done for this element
+          }
+          // If strictly no match, we just don't click it. 
+          // Since we iterate all radios, the correct one will be clicked eventually.
+          break;
+        }
+
         // Find matching radio button by matching value to options
         printLog(`Radio: looking for "${value}" in options: ${JSON.stringify(options)} `);
         const name = input.getAttribute('name');
@@ -1312,6 +1531,47 @@ class FormFiller {
           input.value = value;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (input.tagName.toLowerCase().startsWith('spl-')) {
+          // Handle spl-* Custom Elements
+          printLog(`Setting value for custom element ${input.tagName}`);
+
+          // Helper to set value on internal input if accessible via Shadow DOM
+          const setShadowValue = (host: HTMLElement, val: string) => {
+            if (host.shadowRoot) {
+              const internalInput = host.shadowRoot.querySelector('input, textarea');
+              if (internalInput) {
+                (internalInput as any).value = val;
+                internalInput.dispatchEvent(new Event('input', { bubbles: true }));
+                internalInput.dispatchEvent(new Event('change', { bubbles: true }));
+                printLog(`Set value on internal shadow input for ${host.tagName}`);
+                return true;
+              }
+            }
+            return false;
+          };
+
+          if (input.tagName.toLowerCase() === 'spl-phone-field') {
+            // For phone field, it might pass complex object. 
+            // But usually typing works? Text value is safest safe-bet.
+            // Try setting attribute and property.
+            (input as any).value = value;
+            input.setAttribute('value', value);
+
+            // Try shadow
+            setShadowValue(input, value);
+          } else {
+            // spl-input, spl-textarea
+            // 1. Try Shadow DOM first (most reliable for interactions)
+            const shadowSet = setShadowValue(input, value);
+
+            // 2. Always set on host as well (for binding)
+            (input as any).value = value;
+            input.setAttribute('value', value);
+          }
+
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          input.dispatchEvent(new Event('blur', { bubbles: true }));
         }
         break;
     }

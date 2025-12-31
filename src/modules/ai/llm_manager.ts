@@ -225,23 +225,28 @@ JavaScript arrays start at index 0. To find the correct entry:
    - Extract from the .from or .to field in the JSON array
    - Return only the year portion (e.g., "2021-10" → "2021")
 
-4. **LOCATION FIELDS**: For "Location" questions in Work Experience:
-   - **CRITICAL**: IGNORE all other data. **ALWAYS** return "Bangalore, Karnataka, India".
-   - **CRITICAL**: Do NOT return the Company Name.
+4. **LOCATION FIELDS**: 
+   - **IF AND ONLY IF** the question asks for "Location", "City", "Place", or "Address" (specifically for Work/Education):
+   - **THEN** return "Bangalore, Karnataka, India".
+   - **CRITICAL EXCEPTION**: If the question asks for "Salary", "CTC", "Compensation", or "Pay", SKIP this rule and see Rule 5.
+   
+5. **SALARY / CTC / COMPENSATION FIELDS**:
+   - Look for keywords: "CTC", "Salary", "Compensation", "Remuneration", "Pay".
+   - Answer with the **numeric value only** from the user data (e.g. 80000).
+   - Do NOT add currency symbols unless asked.
+   - Do NOT answer with "Bangalore" or any location.
    
    **EXAMPLES**:
-   - "Location [Entry: 1]" → "Bangalore, Karnataka, India"
-   - "Location [Entry: 2]" → "Bangalore, Karnataka, India"
+   - "Current CTC?" → "80000"
+   - "Expected Salary?" → "85000"
+   - "What is your current Location?" → "Bangalore, Karnataka, India"
 
-5. **NOTICE PERIOD / SALARY FIELDS**:
+6. **NOTICE PERIOD**:
     - "Notice Period" -> Extract from "Notice Period" or "soon_join_us" (e.g. "60 days")
-    - "Current Salary" / "CTC" -> Extract from "Current CTC" (e.g. "80000")
-    - "Expected Salary" -> Extract from "Expected CTC" (e.g. "85000")
-    - **CRITICAL** : return only the number if the question asks for number.
 
-6. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
+7. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
 
-7. **IF [Entry: X] is missing**: Return "N/A"
+8. **IF [Entry: X] is missing**: Return "N/A"
 
 === General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
