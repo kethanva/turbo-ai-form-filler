@@ -100,10 +100,15 @@ class FormFiller {
 
           // 3. Fill elements in this chunk (SEQUENTIAL to prevent UI interference)
           // We must fill sequentially because opening a dropdown often closes others
-          for (const formElement of chunk) {
+          // Use pre-computed enhanced questions from questionsList to ensure consistency
+          for (let j = 0; j < chunk.length; j++) {
+            const formElement = chunk[j];
+            const enhancedQuestion = questionsList[j].question; // Use same question from batch request
             try {
-              const enhancedQuestion = this.getEnhancedQuestion(formElement);
               const cachedAnswer = batchAnswers.get(enhancedQuestion);
+              if (!cachedAnswer) {
+                printLog(`⚠️ No cached answer for: ${enhancedQuestion.substring(0, 60)}...`);
+              }
               await this.fillElementWithAnswer(formElement, cachedAnswer);
 
               // Small delay between elements to allow UI to settle
@@ -1380,9 +1385,10 @@ class FormFiller {
             break;
           }
 
-          // Partial match
-          if (targetVal.length > 2 && optText.length > 2) {
-            if (optText.includes(targetVal) || targetVal.includes(optText)) {
+          // Partial match - use word boundary to avoid "Female" matching "Male"
+          if (targetVal.length > 2) {
+            const wordBoundaryRegex = new RegExp(`\\b${targetVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            if (wordBoundaryRegex.test(optText)) {
               bestMatch = opt;
               matchIndex = i;
               printLog(`Found partial ${type} option match: "${opt.textContent}"`);
@@ -1462,9 +1468,20 @@ class FormFiller {
                     const opt = visibleOptionElements[i];
                     const optText = (opt.textContent || '').toLowerCase().trim();
 
-                    if (optText === newTargetVal || (optText.includes(newTargetVal) && newTargetVal.length > 3)) {
+                    // Exact match is always valid
+                    if (optText === newTargetVal) {
                       newBestMatch = opt;
                       break;
+                    }
+
+                    // For partial matches, require word boundary to avoid "Female" matching "Male"
+                    // Use word boundary regex: the target value must appear as a whole word
+                    if (newTargetVal.length > 2) {
+                      const wordBoundaryRegex = new RegExp(`\\b${newTargetVal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                      if (wordBoundaryRegex.test(optText)) {
+                        newBestMatch = opt;
+                        break;
+                      }
                     }
                   }
 

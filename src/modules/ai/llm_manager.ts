@@ -306,51 +306,116 @@ Questions:
 
     batchPrompt += `\n\nProvide ONLY the answers, one per line, in the format Q1: answer, Q2: answer, etc. Be concise.`;
 
-    try {
-      const secrets = await loadSecrets();
-      const client = this.clients.groq;
+    // Helper function to parse LLM response
+    const parseResponse = (content: string): void => {
+      const lines = content.split('\n');
+      const matchedIndices = new Set<number>();
 
-      if (client) {
-        const response = await fetch(client.api_url, {
-          method: 'POST',
-          headers: {
-            "Authorization": `Bearer ${client.token}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            model: client.model,
-            messages: [{ role: "user", content: batchPrompt }],
-            max_tokens: 2048,
-            temperature: 0.1
-          })
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          if (result.choices && result.choices.length > 0) {
-            const content = result.choices[0].message.content;
-
-            // Parse the batch response
-            const lines = content.split('\n');
-            lines.forEach((line: string) => {
-              const match = line.match(/^Q(\d+):\s*(.+)/i);
-              if (match) {
-                const idx = parseInt(match[1]) - 1;
-                const answer = match[2].trim();
-                if (idx >= 0 && idx < questionsList.length) {
-                  results.set(questionsList[idx].question, answer);
-                }
-              }
-            });
-
-            printLog(`Batch answered ${results.size}/${questionsList.length} questions in single call`);
+      lines.forEach((line: string) => {
+        // Try multiple patterns for parsing
+        let match = line.match(/^Q(\d+):\s*(.+)/i);
+        if (!match) {
+          // Try alternate format: "1: answer" or "1. answer"
+          match = line.match(/^(\d+)[.:]\s*(.+)/);
+        }
+        if (match) {
+          const idx = parseInt(match[1]) - 1;
+          const answer = match[2].trim();
+          if (idx >= 0 && idx < questionsList.length && answer.length > 0) {
+            results.set(questionsList[idx].question, answer);
+            matchedIndices.add(idx);
           }
         }
+      });
+
+      // Log unmatched questions for debugging
+      const unmatchedQuestions: string[] = [];
+      questionsList.forEach((q, idx) => {
+        if (!matchedIndices.has(idx)) {
+          unmatchedQuestions.push(`Q${idx + 1}: ${q.question.substring(0, 50)}...`);
+        }
+      });
+
+      if (unmatchedQuestions.length > 0) {
+        printLog(`⚠️ Batch parse: ${unmatchedQuestions.length} questions unmatched: ${unmatchedQuestions.slice(0, 3).join('; ')}${unmatchedQuestions.length > 3 ? '...' : ''}`);
       }
-    } catch (e) {
-      printLog(`Batch answer failed, falling back to individual: ${e}`);
+    };
+
+    // Try providers in order (Groq first, then HuggingFace)
+    for (const provider of this.providerPriority) {
+      try {
+        const client = this.clients[provider as keyof LLMClients];
+        if (!client) continue;
+
+        printLog(`Batch request: trying ${provider} for ${questionsList.length} questions...`);
+
+        if (provider === "groq") {
+          const response = await fetch((client as GroqClient).api_url, {
+            method: 'POST',
+            headers: {
+              "Authorization": `Bearer ${(client as GroqClient).token}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: (client as GroqClient).model,
+              messages: [{ role: "user", content: batchPrompt }],
+              max_tokens: 2048,
+              temperature: 0.1
+            })
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            if (result.choices && result.choices.length > 0) {
+              const content = result.choices[0].message.content;
+              parseResponse(content);
+
+              if (results.size > 0) {
+                printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
+                return results;
+              }
+            }
+          } else {
+            printLog(`Batch ${provider} failed with status ${response.status}`);
+          }
+        } else if (provider === "huggingface") {
+          const hfClient = client as HuggingFaceClient;
+          const response = await fetch(hfClient.api_url, {
+            method: 'POST',
+            headers: {
+              "Authorization": `Bearer ${hfClient.token}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: hfClient.model,
+              messages: [{ role: "user", content: batchPrompt }],
+              max_tokens: 2048,
+              temperature: 0.1
+            })
+          });
+
+          if (response.ok) {
+            const result = await response.json();
+            if (result.choices && result.choices.length > 0) {
+              const content = result.choices[0].message.content;
+              parseResponse(content);
+
+              if (results.size > 0) {
+                printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
+                return results;
+              }
+            }
+          } else {
+            printLog(`Batch ${provider} failed with status ${response.status}`);
+          }
+        }
+      } catch (e) {
+        printLog(`Batch ${provider} error: ${e}`);
+        continue;
+      }
     }
 
+    printLog(`⚠️ All batch providers failed. Will fall back to individual LLM calls.`);
     return results;
   }
 
