@@ -1,5 +1,6 @@
 // Converted from modules/ai/llm_manager.py
-import { Secrets, loadSecrets } from '../../config/secrets.js';
+import { Secrets } from '../../config/secrets.js';
+import { loadSecrets } from '../storage.js';
 import { groqCreateClient, groqAnswerQuestion, groqExtractSkills, GroqClient } from './groqConnections.js';
 import { huggingfaceCreateClient, huggingfaceAnswerQuestion, huggingfaceExtractSkills, HuggingFaceClient } from './huggingfaceConnections.js';
 import { fuzzyAnswerQuestion, fuzzyExtractSkills } from '../fuzzy_matcher.js';

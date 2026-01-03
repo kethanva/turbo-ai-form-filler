@@ -1,6 +1,6 @@
 // Content script for form filling
 import { llmManager } from './modules/ai/llm_manager.js';
-import { loadSecrets } from './config/secrets.js';
+import { loadSecrets } from './modules/storage.js';
 import { personals } from './config/personals.js';
 import { printLog } from './modules/helpers.js';
 
