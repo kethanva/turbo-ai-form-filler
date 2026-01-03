@@ -1,11 +1,9 @@
 // Converted from modules/ai/llm_manager.py
-import { Secrets } from '../../config/secrets.js';
-import { loadSecrets } from '../storage.js';
+import { Secrets, loadSecrets, loadPersonals, getPersonalsSync } from '../config_loader.js';
 import { groqCreateClient, groqAnswerQuestion, groqExtractSkills, GroqClient } from './groqConnections.js';
 import { huggingfaceCreateClient, huggingfaceAnswerQuestion, huggingfaceExtractSkills, HuggingFaceClient } from './huggingfaceConnections.js';
 import { fuzzyAnswerQuestion, fuzzyExtractSkills } from '../fuzzy_matcher.js';
 import { printLog } from '../helpers.js';
-import { personals } from '../../config/personals.js';
 
 interface LLMClients {
   groq: GroqClient | null;
@@ -67,7 +65,8 @@ export class LLMManager {
     }
 
     const secrets = await loadSecrets();
-    const userInfo = userInformationAll || configContext || JSON.stringify(personals);
+    const personalsData = getPersonalsSync() || await loadPersonals();
+    const userInfo = userInformationAll || configContext || JSON.stringify(personalsData);
 
     // Try providers in order starting from current fallback index
     for (let i = this.currentFallbackIndex; i < this.providerPriority.length; i++) {
@@ -174,11 +173,12 @@ export class LLMManager {
     if (questionsList.length === 0) return results;
 
     // Build a combined prompt for all questions
-    const userInfo = userInformationAll || configContext || JSON.stringify(personals);
+    const personalsData = getPersonalsSync() || await loadPersonals();
+    const userInfo = userInformationAll || configContext || JSON.stringify(personalsData);
 
     // Explicitly add structured data for repeaters
-    const experienceData = JSON.stringify(personals.experience_details || [], null, 2);
-    const educationData = JSON.stringify(personals.education_details || [], null, 2);
+    const experienceData = JSON.stringify(personalsData.experience_details || [], null, 2);
+    const educationData = JSON.stringify(personalsData.education_details || [], null, 2);
 
     let batchPrompt = `You are a helpful assistant filling out a form.
 

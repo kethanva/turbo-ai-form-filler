@@ -1,8 +1,10 @@
 // Content script for form filling
 import { llmManager } from './modules/ai/llm_manager.js';
-import { loadSecrets } from './modules/storage.js';
-import { personals } from './config/personals.js';
+import { loadSecrets, loadPersonals, getPersonalsSync, Personals } from './modules/config_loader.js';
 import { printLog } from './modules/helpers.js';
+
+// Cached personals (loaded async at start)
+let personals: Personals;
 
 interface FormElement {
   element: HTMLElement;
@@ -52,8 +54,11 @@ class FormFiller {
     printLog("Starting form filling...");
 
     try {
-      // Initialize LLM manager
+      // Load configs
       const secrets = await loadSecrets();
+      personals = await loadPersonals();
+
+      // Initialize LLM manager
       await llmManager.initializeClients(secrets);
 
       // Find all form elements

@@ -5,5 +5,4 @@ dist/
 CHROME_DATA/
 
 # Secrets - DO NOT COMMIT
-**/secrets.ts
-src/config/secrets.ts
+config/secrets.json

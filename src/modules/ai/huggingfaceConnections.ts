@@ -1,7 +1,6 @@
 // Converted from modules/ai/connections/huggingfaceConnections.py
-import { Secrets } from '../../config/secrets.js';
+import { Secrets } from '../config_loader.js';
 import { printLog, criticalErrorLog } from '../helpers.js';
-import { questions } from '../../config/questions.js';
 
 export interface HuggingFaceClient {
   token: string;

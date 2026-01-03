@@ -1,7 +1,6 @@
 // Converted from modules/ai/connections/groqConnections.py
-import { Secrets } from '../../config/secrets.js';
+import { Secrets, loadQuestions, getQuestionsSync } from '../config_loader.js';
 import { printLog, criticalErrorLog } from '../helpers.js';
-import { questions } from '../../config/questions.js';
 
 export interface GroqClient {
   token: string;
@@ -60,6 +59,7 @@ export async function groqAnswerQuestion(
     }
 
     // Build prompt using shared template
+    const questions = getQuestionsSync() || await loadQuestions();
     const userInfo = userInformationAll || configFilesContent || "N/A";
     let prompt = questions.ai_answer_prompt.replace('{}', userInfo).replace('{}', question);
 
@@ -153,6 +153,7 @@ export async function groqExtractSkills(
   }
 
   try {
+    const questions = getQuestionsSync() || await loadQuestions();
     const prompt = questions.extract_skills_prompt.replace('{}', jobDescription);
 
     const headers = {
