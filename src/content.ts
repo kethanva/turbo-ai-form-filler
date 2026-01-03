@@ -1316,9 +1316,33 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           checkboxLabel.includes('confirm') ||
           checkboxLabel.includes('acknowledge');
 
+        // Special handling for "I currently work here" checkbox
+        const isCurrentlyWorkHereCheckbox =
+          checkboxLabel.includes('currently work here') ||
+          checkboxLabel.includes('current position') ||
+          checkboxLabel.includes('present employer') ||
+          checkboxLabel.includes('still working');
+
+        // For "currently work here", check if the experience entry is current (ends with Present)
+        let shouldCheckCurrentWork = false;
+        if (isCurrentlyWorkHereCheckbox && personals?.experience_details) {
+          // Get entry index from label context if available, e.g., "[Entry: 1]"
+          const entryMatch = checkboxLabel.match(/entry[:\s]*(\d+)/i);
+          const entryIndex = entryMatch ? parseInt(entryMatch[1], 10) - 1 : 0;
+          const experience = personals.experience_details[entryIndex];
+          if (experience) {
+            const endDate = (experience.to || '').toString().toLowerCase().trim();
+            // Check if "to" date indicates current employment
+            if (endDate === 'present' || endDate === '' || endDate === 'current' || endDate === 'ongoing') {
+              shouldCheckCurrentWork = true;
+              printLog(`✓ Entry ${entryIndex + 1} is current position (to: "${experience.to}"), will check "currently work here"`);
+            }
+          }
+        }
+
         // For checkboxes, check if value matches positive responses OR if it's a terms checkbox
         const checkValue = value.toLowerCase().trim();
-        const shouldCheck = isTermsCheckbox ||
+        const shouldCheck = isTermsCheckbox || shouldCheckCurrentWork ||
           checkValue === 'yes' || checkValue === 'true' ||
           checkValue === '1' || checkValue === 'on' ||
           checkValue === 'checked' || checkValue === 'agree' ||

@@ -28,6 +28,24 @@ export class LLMManager {
     this.currentFallbackIndex = 0;
   }
 
+  /**
+   * Removes duplicate items from comma-separated responses (fixes LLM repetition loop)
+   */
+  private deduplicateResponse(answer: string): string {
+    // Check if it looks like a comma-separated list
+    if (answer.includes(',')) {
+      const items = answer.split(',').map(s => s.trim()).filter(s => s.length > 0);
+
+      // Only deduplicate if there are duplicates
+      const uniqueItems = [...new Set(items)];
+      if (uniqueItems.length < items.length) {
+        printLog(`🔧 Deduplicated response: ${items.length} items → ${uniqueItems.length} unique items`);
+        return uniqueItems.join(', ');
+      }
+    }
+    return answer;
+  }
+
   async initializeClients(secrets: Secrets): Promise<void> {
     printLog("Initializing LLM Clients...");
 
@@ -115,8 +133,12 @@ export class LLMManager {
             printLog(`LLM Provider ${provider} returned error message: ${answer}`);
             continue;
           }
-          //printLog(`✅ LLM Successfully answered with ${provider}: ${answer.substring(0, 100)}...`);
-          return answer;
+
+          // Deduplicate comma-separated lists (fixes LLM repetition loop issue)
+          let cleanedAnswer = this.deduplicateResponse(answer);
+
+          //printLog(`✅ LLM Successfully answered with ${provider}: ${cleanedAnswer.substring(0, 100)}...`);
+          return cleanedAnswer;
         } else {
           if (answer === null) {
             printLog(`LLM Provider ${provider} returned None (likely API error)`);
