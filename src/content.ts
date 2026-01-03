@@ -1555,7 +1555,59 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           select.dispatchEvent(new Event('input', { bubbles: true }));
           printLog(`✓ Set select to option ${matchingOptionIndex}: ${select.options[matchingOptionIndex].text} `);
         } else {
-          printLog(`⚠ No matching option found for value: ${value} `);
+          // Smart fallback: Check if this is a Yes/No question
+          const optionsArr = Array.from(select.options);
+          const hasYesOption = optionsArr.some((o: HTMLOptionElement) => o.text.toLowerCase().trim() === 'yes');
+          const hasNoOption = optionsArr.some((o: HTMLOptionElement) => o.text.toLowerCase().trim() === 'no');
+          const isYesNoQuestion = hasYesOption && hasNoOption;
+
+          // Get the question text to determine appropriate default
+          const questionText = input.getAttribute('aria-label')?.toLowerCase() ||
+            input.closest('[data-test-form-element]')?.querySelector('label')?.textContent?.toLowerCase() || '';
+
+          if (isYesNoQuestion) {
+            // For positive questions (willing, comfortable, agree, etc), default to Yes
+            const positiveKeywords = ['willing', 'comfortable', 'agree', 'able', 'can you', 'do you', 'have you', 'are you'];
+            const negativeKeywords = ['disability', 'conflict', 'legal issue', 'criminal', 'terminated', 'fired'];
+
+            const isPositiveQuestion = positiveKeywords.some(kw => questionText.includes(kw));
+            const isNegativeQuestion = negativeKeywords.some(kw => questionText.includes(kw));
+
+            let defaultAnswer = 'yes'; // Default to Yes for most questions
+            if (isNegativeQuestion) {
+              defaultAnswer = 'no';
+            }
+
+            const targetIndex = optionsArr.findIndex((o: HTMLOptionElement) => o.text.toLowerCase().trim() === defaultAnswer);
+            if (targetIndex >= 0) {
+              select.selectedIndex = targetIndex;
+              select.options[targetIndex].selected = true;
+              select.dispatchEvent(new Event('change', { bubbles: true }));
+              select.dispatchEvent(new Event('input', { bubbles: true }));
+              printLog(`⚠ N/A returned but Yes/No detected. Auto-selected: ${defaultAnswer.toUpperCase()} (question: ${isPositiveQuestion ? 'positive' : isNegativeQuestion ? 'negative' : 'neutral'})`);
+            }
+          } else {
+            // For non-Yes/No questions, try to select first non-placeholder option
+            let fallbackIndex = -1;
+            for (let i = 0; i < optionsArr.length; i++) {
+              const opt = optionsArr[i];
+              const optText = opt.text.toLowerCase().trim();
+              // Skip placeholder options
+              if (optText && !optText.includes('select') && !optText.includes('choose') && !optText.includes('--')) {
+                fallbackIndex = i;
+                break;
+              }
+            }
+            if (fallbackIndex >= 0) {
+              select.selectedIndex = fallbackIndex;
+              select.options[fallbackIndex].selected = true;
+              select.dispatchEvent(new Event('change', { bubbles: true }));
+              select.dispatchEvent(new Event('input', { bubbles: true }));
+              printLog(`⚠ No match for "${value}", auto-selected first valid option: ${select.options[fallbackIndex].text}`);
+            } else {
+              printLog(`⚠ No matching option found for value: ${value} `);
+            }
+          }
         }
         break;
 

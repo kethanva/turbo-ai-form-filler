@@ -1,23 +1,114 @@
-// Options page for settings
-document.addEventListener('DOMContentLoaded', () => {
-  const form = document.getElementById('settingsForm') as HTMLFormElement;
-  const saveButton = document.getElementById('saveButton') as HTMLButtonElement;
-  const statusDiv = document.getElementById('status') as HTMLDivElement;
+// Options page for settings - handles tabs, JSON editors, and Chrome storage
 
-  // Load current settings
-  chrome.storage.sync.get(['secrets', 'settings'], (result) => {
-    const secrets = result.secrets || {};
-    const settings = result.settings || {};
+// ============ DEFAULTS (loaded from bundled JSON files) ============
+let defaultPersonals: any = null;
+let defaultQuestions: any = null;
 
+async function loadDefaults(): Promise<void> {
+  try {
+    const personalsUrl = chrome.runtime.getURL('config/personals.json');
+    const questionsUrl = chrome.runtime.getURL('config/questions.json');
+
+    const [personalsRes, questionsRes] = await Promise.all([
+      fetch(personalsUrl),
+      fetch(questionsUrl)
+    ]);
+
+    defaultPersonals = await personalsRes.json();
+    defaultQuestions = await questionsRes.json();
+  } catch (e) {
+    console.error('Failed to load default configs:', e);
+  }
+}
+
+// ============ TAB SWITCHING ============
+function initTabs(): void {
+  const tabButtons = document.querySelectorAll('.tab-btn');
+  const tabContents = document.querySelectorAll('.tab-content');
+
+  tabButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tabId = btn.getAttribute('data-tab');
+
+      // Update button states
+      tabButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Update content visibility
+      tabContents.forEach(content => {
+        content.classList.remove('active');
+        if (content.id === `tab-${tabId}`) {
+          content.classList.add('active');
+        }
+      });
+    });
+  });
+}
+
+// ============ JSON VALIDATION ============
+function validateJSON(text: string): { valid: boolean; error?: string; parsed?: any } {
+  try {
+    const parsed = JSON.parse(text);
+    return { valid: true, parsed };
+  } catch (e: any) {
+    return { valid: false, error: e.message };
+  }
+}
+
+function formatJSON(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
+  }
+}
+
+// ============ STATUS MESSAGES ============
+function showStatus(elementId: string, message: string, isError: boolean = false): void {
+  const statusEl = document.getElementById(elementId);
+  if (statusEl) {
+    statusEl.textContent = message;
+    statusEl.className = `status ${isError ? 'error' : 'success'}`;
+
+    if (!isError) {
+      setTimeout(() => {
+        statusEl.textContent = '';
+        statusEl.className = 'status';
+      }, 3000);
+    }
+  }
+}
+
+// ============ CHARACTER COUNT ============
+function updateCharCount(textareaId: string, counterId: string): void {
+  const textarea = document.getElementById(textareaId) as HTMLTextAreaElement;
+  const counter = document.getElementById(counterId);
+  if (textarea && counter) {
+    const chars = textarea.value.length;
+    counter.textContent = `${chars.toLocaleString()} characters`;
+  }
+}
+
+// ============ LOAD SETTINGS ============
+async function loadSettings(): Promise<void> {
+  await loadDefaults();
+
+  // Load API settings from sync storage (small)
+  chrome.storage.sync.get(['secrets', 'settings'], (syncResult) => {
+    const secrets = syncResult.secrets || {};
+    const settings = syncResult.settings || {};
+
+    // API Keys tab
     (document.getElementById('useAI') as HTMLInputElement).checked = secrets.use_AI !== false;
-    (document.getElementById('batchMode') as HTMLInputElement).checked = settings.batch_mode !== false; // Default true
-    (document.getElementById('chunkMode') as HTMLInputElement).checked = settings.chunk_mode !== false; // Default true
+    (document.getElementById('batchMode') as HTMLInputElement).checked = settings.batch_mode !== false;
+    (document.getElementById('chunkMode') as HTMLInputElement).checked = settings.chunk_mode !== false;
 
-    // Set initial visibility
     const chunkModeContainer = document.getElementById('chunkModeContainer');
     if (chunkModeContainer) {
       chunkModeContainer.style.display = (settings.batch_mode !== false) ? 'block' : 'none';
     }
+
     (document.getElementById('groqApiKey') as HTMLInputElement).value = secrets.groq_api_key || '';
     (document.getElementById('groqModel') as HTMLInputElement).value = secrets.groq_model || 'llama-3.1-8b-instant';
     (document.getElementById('groqApiUrl') as HTMLInputElement).value = secrets.groq_api_url || 'https://api.groq.com/openai/v1/chat/completions';
@@ -26,7 +117,138 @@ document.addEventListener('DOMContentLoaded', () => {
     (document.getElementById('hfApiUrl') as HTMLInputElement).value = secrets.huggingface_api_url || 'https://router.huggingface.co/v1/chat/completions';
   });
 
-  // Toggle Chunk Mode visibility based on Batch Mode
+  // Load large configs from local storage (no size limit)
+  chrome.storage.local.get(['personals', 'questions'], (localResult) => {
+    // Profile tab - use stored or defaults
+    const personalsData = localResult.personals || defaultPersonals || {};
+    const personalsEditor = document.getElementById('personalsEditor') as HTMLTextAreaElement;
+    personalsEditor.value = JSON.stringify(personalsData, null, 2);
+    updateCharCount('personalsEditor', 'profileCharCount');
+
+    // Prompts tab - use stored or defaults
+    const questionsData = localResult.questions || defaultQuestions || {};
+    const questionsEditor = document.getElementById('questionsEditor') as HTMLTextAreaElement;
+    questionsEditor.value = JSON.stringify(questionsData, null, 2);
+    updateCharCount('questionsEditor', 'promptsCharCount');
+  });
+}
+
+// ============ SAVE FUNCTIONS ============
+function saveSecrets(): void {
+  const groqKey = (document.getElementById('groqApiKey') as HTMLInputElement).value.trim();
+  const hfKey = (document.getElementById('hfApiKey') as HTMLInputElement).value.trim();
+
+  // Validation
+  if (groqKey && groqKey.length > 0 && groqKey.length <= 8) {
+    showStatus('secretsStatus', 'Groq API Key must be more than 8 characters!', true);
+    return;
+  }
+  if (hfKey && hfKey.length > 0 && hfKey.length <= 8) {
+    showStatus('secretsStatus', 'HuggingFace API Key must be more than 8 characters!', true);
+    return;
+  }
+
+  chrome.storage.sync.get(['secrets'], (result) => {
+    const existingSecrets = result.secrets || {};
+    const updatedSecrets = { ...existingSecrets };
+
+    updatedSecrets.use_AI = (document.getElementById('useAI') as HTMLInputElement).checked;
+    updatedSecrets.groq_model = (document.getElementById('groqModel') as HTMLInputElement).value.trim();
+    updatedSecrets.groq_api_url = (document.getElementById('groqApiUrl') as HTMLInputElement).value.trim();
+    updatedSecrets.huggingface_model = (document.getElementById('hfModel') as HTMLInputElement).value.trim();
+    updatedSecrets.huggingface_api_url = (document.getElementById('hfApiUrl') as HTMLInputElement).value.trim();
+
+    if (groqKey.length > 8) {
+      updatedSecrets.groq_api_key = groqKey;
+    }
+    if (hfKey.length > 8) {
+      updatedSecrets.huggingface_api_key = hfKey;
+    }
+
+    const settings = {
+      batch_mode: (document.getElementById('batchMode') as HTMLInputElement).checked,
+      chunk_mode: (document.getElementById('chunkMode') as HTMLInputElement).checked
+    };
+
+    chrome.storage.sync.set({ secrets: updatedSecrets, settings }, () => {
+      showStatus('secretsStatus', '✓ API settings saved!');
+    });
+  });
+}
+
+function saveProfile(): void {
+  const editor = document.getElementById('personalsEditor') as HTMLTextAreaElement;
+  const result = validateJSON(editor.value);
+
+  if (!result.valid) {
+    editor.classList.add('error');
+    showStatus('profileStatus', `Invalid JSON: ${result.error}`, true);
+    return;
+  }
+
+  editor.classList.remove('error');
+  // Use local storage for large data (no 8KB limit)
+  chrome.storage.local.set({ personals: result.parsed }, () => {
+    if (chrome.runtime.lastError) {
+      showStatus('profileStatus', `Error: ${chrome.runtime.lastError.message}`, true);
+    } else {
+      showStatus('profileStatus', '✓ Profile saved! Reload extension to apply.');
+    }
+  });
+}
+
+function savePrompts(): void {
+  const editor = document.getElementById('questionsEditor') as HTMLTextAreaElement;
+  const result = validateJSON(editor.value);
+
+  if (!result.valid) {
+    editor.classList.add('error');
+    showStatus('promptsStatus', `Invalid JSON: ${result.error}`, true);
+    return;
+  }
+
+  editor.classList.remove('error');
+  // Use local storage for large data
+  chrome.storage.local.set({ questions: result.parsed }, () => {
+    if (chrome.runtime.lastError) {
+      showStatus('promptsStatus', `Error: ${chrome.runtime.lastError.message}`, true);
+    } else {
+      showStatus('promptsStatus', '✓ Prompts saved! Reload extension to apply.');
+    }
+  });
+}
+
+// ============ RESET FUNCTIONS ============
+function resetProfile(): void {
+  if (confirm('Reset profile to defaults? Your changes will be lost.')) {
+    chrome.storage.local.remove('personals', () => {
+      const editor = document.getElementById('personalsEditor') as HTMLTextAreaElement;
+      editor.value = JSON.stringify(defaultPersonals, null, 2);
+      editor.classList.remove('error');
+      updateCharCount('personalsEditor', 'profileCharCount');
+      showStatus('profileStatus', '✓ Profile reset to defaults');
+    });
+  }
+}
+
+function resetPrompts(): void {
+  if (confirm('Reset prompts to defaults? Your changes will be lost.')) {
+    chrome.storage.local.remove('questions', () => {
+      const editor = document.getElementById('questionsEditor') as HTMLTextAreaElement;
+      editor.value = JSON.stringify(defaultQuestions, null, 2);
+      editor.classList.remove('error');
+      updateCharCount('questionsEditor', 'promptsCharCount');
+      showStatus('promptsStatus', '✓ Prompts reset to defaults');
+    });
+  }
+}
+
+// ============ INITIALIZATION ============
+document.addEventListener('DOMContentLoaded', () => {
+  initTabs();
+  loadSettings();
+
+  // Batch mode toggle
   const batchModeCheckbox = document.getElementById('batchMode');
   if (batchModeCheckbox) {
     batchModeCheckbox.addEventListener('change', (e) => {
@@ -37,63 +259,34 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Save settings
-  // Save settings
-  saveButton.addEventListener('click', () => {
-    // Get current inputs
-    const newGroqKey = (document.getElementById('groqApiKey') as HTMLInputElement).value.trim();
-    const newHfKey = (document.getElementById('hfApiKey') as HTMLInputElement).value.trim();
+  // Save buttons
+  document.getElementById('saveSecrets')?.addEventListener('click', saveSecrets);
+  document.getElementById('saveProfile')?.addEventListener('click', saveProfile);
+  document.getElementById('savePrompts')?.addEventListener('click', savePrompts);
 
-    // Validation
-    if (newGroqKey && newGroqKey.length > 0 && newGroqKey.length <= 8) {
-      statusDiv.textContent = 'Groq API Key must be more than 8 characters!';
-      statusDiv.className = 'status error';
-      return;
-    }
+  // Format buttons
+  document.getElementById('formatProfile')?.addEventListener('click', () => {
+    const editor = document.getElementById('personalsEditor') as HTMLTextAreaElement;
+    editor.value = formatJSON(editor.value);
+    updateCharCount('personalsEditor', 'profileCharCount');
+  });
+  document.getElementById('formatPrompts')?.addEventListener('click', () => {
+    const editor = document.getElementById('questionsEditor') as HTMLTextAreaElement;
+    editor.value = formatJSON(editor.value);
+    updateCharCount('questionsEditor', 'promptsCharCount');
+  });
 
-    if (newHfKey && newHfKey.length > 0 && newHfKey.length <= 8) {
-      statusDiv.textContent = 'HuggingFace API Key must be more than 8 characters!';
-      statusDiv.className = 'status error';
-      return;
-    }
+  // Reset buttons
+  document.getElementById('resetProfile')?.addEventListener('click', resetProfile);
+  document.getElementById('resetPrompts')?.addEventListener('click', resetPrompts);
 
-    // Load existing secrets to preserve keys if not modified
-    chrome.storage.sync.get(['secrets'], (result) => {
-      const existingSecrets = result.secrets || {};
-
-      // Create updated secrets object by merging
-      const updatedSecrets = { ...existingSecrets };
-
-      // Always update boolean/toggle settings
-      updatedSecrets.use_AI = (document.getElementById('useAI') as HTMLInputElement).checked;
-      updatedSecrets.groq_model = (document.getElementById('groqModel') as HTMLInputElement).value.trim();
-      updatedSecrets.groq_api_url = (document.getElementById('groqApiUrl') as HTMLInputElement).value.trim();
-      updatedSecrets.huggingface_model = (document.getElementById('hfModel') as HTMLInputElement).value.trim();
-      updatedSecrets.huggingface_api_url = (document.getElementById('hfApiUrl') as HTMLInputElement).value.trim();
-
-      // Only update sensitive keys if new value is provided and valid
-      if (newGroqKey.length > 8) {
-        updatedSecrets.groq_api_key = newGroqKey;
-      }
-
-      if (newHfKey.length > 8) {
-        updatedSecrets.huggingface_api_key = newHfKey;
-      }
-
-      const settings = {
-        batch_mode: (document.getElementById('batchMode') as HTMLInputElement).checked,
-        chunk_mode: (document.getElementById('chunkMode') as HTMLInputElement).checked
-      };
-
-      chrome.storage.sync.set({ secrets: updatedSecrets, settings }, () => {
-        statusDiv.textContent = 'Settings saved!';
-        statusDiv.className = 'status success';
-        setTimeout(() => {
-          statusDiv.textContent = '';
-          statusDiv.className = '';
-        }, 2000);
-      });
-    });
+  // Character count updates
+  document.getElementById('personalsEditor')?.addEventListener('input', () => {
+    updateCharCount('personalsEditor', 'profileCharCount');
+    (document.getElementById('personalsEditor') as HTMLTextAreaElement).classList.remove('error');
+  });
+  document.getElementById('questionsEditor')?.addEventListener('input', () => {
+    updateCharCount('questionsEditor', 'promptsCharCount');
+    (document.getElementById('questionsEditor') as HTMLTextAreaElement).classList.remove('error');
   });
 });
-

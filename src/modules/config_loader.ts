@@ -46,6 +46,34 @@ let questionsCache: Questions | null = null;
 let personalsCache: Personals | null = null;
 
 /**
+ * Invalidate config caches - call this when storage is updated
+ */
+export function invalidateConfigCache(which?: 'personals' | 'questions' | 'all'): void {
+    if (!which || which === 'all') {
+        personalsCache = null;
+        questionsCache = null;
+    } else if (which === 'personals') {
+        personalsCache = null;
+    } else if (which === 'questions') {
+        questionsCache = null;
+    }
+}
+
+// Listen for storage changes and invalidate caches automatically
+if (typeof chrome !== 'undefined' && chrome.storage) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName === 'local') {
+            if (changes.personals) {
+                personalsCache = null;
+            }
+            if (changes.questions) {
+                questionsCache = null;
+            }
+        }
+    });
+}
+
+/**
  * Load a JSON config file from the extension's config directory
  */
 async function loadJsonConfig<T>(filename: string): Promise<T> {
@@ -109,37 +137,64 @@ export async function saveSecrets(secrets: Partial<Secrets>): Promise<void> {
 }
 
 /**
- * Load questions/prompts from JSON file
+ * Load questions/prompts - Chrome storage first, then bundled JSON
  * Prompts are stored as arrays of strings for readability, joined here
  */
 export async function loadQuestions(): Promise<Questions> {
     if (!questionsCache) {
-        const raw = await loadJsonConfig<{
-            extract_skills_prompt: string | string[];
-            ai_answer_prompt: string | string[]
-        }>('questions.json');
+        // Check Chrome local storage first (user edits)
+        const stored = await new Promise<any>((resolve) => {
+            chrome.storage.local.get(['questions'], (result) => resolve(result.questions));
+        });
 
-        // Join array prompts into single strings
-        questionsCache = {
-            extract_skills_prompt: Array.isArray(raw.extract_skills_prompt)
-                ? raw.extract_skills_prompt.join('\n')
-                : raw.extract_skills_prompt,
-            ai_answer_prompt: Array.isArray(raw.ai_answer_prompt)
-                ? raw.ai_answer_prompt.join('\n')
-                : raw.ai_answer_prompt
-        };
+        if (stored && Object.keys(stored).length > 0) {
+            // User has saved custom questions - process array format
+            questionsCache = {
+                extract_skills_prompt: Array.isArray(stored.extract_skills_prompt)
+                    ? stored.extract_skills_prompt.join('\n')
+                    : stored.extract_skills_prompt || '',
+                ai_answer_prompt: Array.isArray(stored.ai_answer_prompt)
+                    ? stored.ai_answer_prompt.join('\n')
+                    : stored.ai_answer_prompt || ''
+            };
+        } else {
+            // Fallback to bundled JSON
+            const raw = await loadJsonConfig<{
+                extract_skills_prompt: string | string[];
+                ai_answer_prompt: string | string[]
+            }>('questions.json');
+
+            questionsCache = {
+                extract_skills_prompt: Array.isArray(raw.extract_skills_prompt)
+                    ? raw.extract_skills_prompt.join('\n')
+                    : raw.extract_skills_prompt,
+                ai_answer_prompt: Array.isArray(raw.ai_answer_prompt)
+                    ? raw.ai_answer_prompt.join('\n')
+                    : raw.ai_answer_prompt
+            };
+        }
     }
     return questionsCache;
 }
 
 /**
- * Load personals/user info from JSON file
+ * Load personals/user info - Chrome storage first, then bundled JSON
  */
 export async function loadPersonals(): Promise<Personals> {
     if (!personalsCache) {
-        personalsCache = await loadJsonConfig<Personals>('personals.json');
+        // Check Chrome local storage first (user edits)
+        const stored = await new Promise<any>((resolve) => {
+            chrome.storage.local.get(['personals'], (result) => resolve(result.personals));
+        });
+
+        if (stored && Object.keys(stored).length > 0) {
+            personalsCache = stored;
+        } else {
+            // Fallback to bundled JSON
+            personalsCache = await loadJsonConfig<Personals>('personals.json');
+        }
     }
-    return personalsCache;
+    return personalsCache!;
 }
 
 // For synchronous access (after initial load)
