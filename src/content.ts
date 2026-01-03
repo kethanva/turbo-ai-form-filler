@@ -123,6 +123,11 @@ class FormFiller {
             await this.delay(500);
           }
         }
+
+        // LinkedIn-specific: Handle validation errors after initial fill
+        if (window.location.hostname.includes('linkedin.com')) {
+          await this.handleLinkedInValidationErrors();
+        }
       } else {
         // SEQUENTIAL MODE: One LLM call per field (more accurate)
         const delayMessage = isWorkdayDomain()
@@ -138,6 +143,11 @@ class FormFiller {
             await sleep(delay);
           }
         }
+
+        // LinkedIn-specific: Handle validation errors after initial fill
+        if (window.location.hostname.includes('linkedin.com')) {
+          await this.handleLinkedInValidationErrors();
+        }
       }
 
       printLog(`Form filling complete! Filled ${this.filledCount} elements.`);
@@ -148,18 +158,166 @@ class FormFiller {
     }
   }
 
+  /**
+   * Detect and fix LinkedIn Easy Apply form validation errors.
+   * Looks for error messages, re-prompts the LLM with error context, and re-fills fields.
+   */
+  private async handleLinkedInValidationErrors(maxRetries: number = 2): Promise<void> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      // Wait a moment for validation errors to appear in DOM
+      await this.delay(300);
+
+      const errors = this.detectLinkedInValidationErrors();
+      if (errors.length === 0) {
+        printLog('✅ No LinkedIn validation errors detected');
+        return;
+      }
+
+      printLog(`⚠️ Found ${errors.length} LinkedIn validation error(s). Attempting fix (attempt ${attempt}/${maxRetries})...`);
+
+      for (const { input, errorMessage, question } of errors) {
+        const currentValue = (input as HTMLInputElement).value || '';
+        printLog(`  Error on "${question}": "${errorMessage}" (current value: "${currentValue}")`);
+
+        // Build a prompt that includes the error context
+        const errorContextPrompt = `Question: "${question}"
+Your previous answer "${currentValue}" was REJECTED with this validation error: "${errorMessage}"
+Please provide a VALID answer that satisfies the validation requirement.
+IMPORTANT: Only respond with the corrected value, nothing else.`;
+
+        try {
+          const userInfo = personals.user_information_all || JSON.stringify(personals);
+          const correctedAnswer = await llmManager.getAnswer(
+            errorContextPrompt,
+            undefined,
+            'text', // Force text type for correction
+            undefined,
+            userInfo,
+            JSON.stringify(personals)
+          );
+
+          if (correctedAnswer && correctedAnswer !== currentValue) {
+            printLog(`  LLM correction: "${correctedAnswer}"`);
+            // Clear and re-fill the input
+            (input as HTMLInputElement).value = '';
+            await this.setElementValue(input, 'text', correctedAnswer, undefined);
+            printLog(`  ✓ Re-filled with corrected value`);
+          } else {
+            printLog(`  ⚠️ LLM returned same or empty value, skipping`);
+          }
+        } catch (error) {
+          printLog(`  Error getting correction: ${error}`);
+        }
+      }
+
+      // Small delay before checking if errors are resolved
+      await this.delay(300);
+    }
+  }
+
+  /**
+   * Find all LinkedIn validation errors in the current Easy Apply modal.
+   * Returns array of {input, errorMessage, question} for each errored field.
+   */
+  private detectLinkedInValidationErrors(): { input: HTMLElement; errorMessage: string; question: string }[] {
+    const errors: { input: HTMLElement; errorMessage: string; question: string }[] = [];
+
+    // Get the modal container
+    const modal = document.querySelector('[data-test-modal-id="easy-apply-modal"]') ||
+      document.querySelector('.jobs-easy-apply-modal');
+    if (!modal) return errors;
+
+    // Find all error feedback elements
+    const errorElements = modal.querySelectorAll('.artdeco-inline-feedback--error');
+
+    errorElements.forEach(errorEl => {
+      // Get the error message text
+      const messageEl = errorEl.querySelector('.artdeco-inline-feedback__message');
+      const errorMessage = messageEl?.textContent?.trim() || 'Unknown error';
+
+      // Find the associated input - traverse up to the form element container
+      const formElementContainer = errorEl.closest('[data-test-form-element]') ||
+        errorEl.closest('.fb-dash-form-element');
+      if (!formElementContainer) return;
+
+      // Find the input within this container
+      const input = formElementContainer.querySelector('input, textarea, select') as HTMLElement;
+      if (!input) return;
+
+      // Get the question/label
+      const labelEl = formElementContainer.querySelector('label');
+      const question = labelEl?.textContent?.trim() || 'Unknown field';
+
+      errors.push({ input, errorMessage, question });
+    });
+
+    return errors;
+  }
+
+  /**
+   * Helper to find the active form container.
+   * On LinkedIn, this prioritizes the modal (Easy Apply) to avoid detecting search facets.
+   * On other sites, it returns the document to ensure full page scanning.
+   */
+  private findActiveFormContainer(): HTMLElement | Document | null {
+    const hostname = window.location.hostname.toLowerCase();
+    printLog(`[DEBUG] findActiveFormContainer called. Hostname: ${hostname}`);
+
+    // 1. Only apply scoping on LinkedIn
+    if (hostname.includes('linkedin.com')) {
+      printLog('[DEBUG] LinkedIn detected - applying STRICT modal scoping');
+      // STRICT MODE: Only check for specific Easy Apply identifiers as requested
+
+      // A. Specific Easy Apply Modal ID (Highest Priority)
+      const easyApplyModalId = document.querySelector('[data-test-modal-id="easy-apply-modal"]');
+      printLog(`[DEBUG] Easy Apply modal by ID: ${easyApplyModalId ? 'FOUND' : 'NOT FOUND'}`);
+      if (easyApplyModalId) {
+        printLog('✅ Scoped form search to: [data-test-modal-id="easy-apply-modal"]');
+        return easyApplyModalId as HTMLElement;
+      }
+
+      // B. Specific Easy Apply Modal Class
+      const easyApplyModalClass = document.querySelector('.jobs-easy-apply-modal');
+      printLog(`[DEBUG] Easy Apply modal by class: ${easyApplyModalClass ? 'FOUND' : 'NOT FOUND'}`);
+      if (easyApplyModalClass) {
+        printLog('✅ Scoped form search to: .jobs-easy-apply-modal');
+        return easyApplyModalClass as HTMLElement;
+      }
+
+      // Strict fallback: If on LinkedIn and no Easy Apply modal found, return NULL to avoid scanning page
+      printLog('⛔ LinkedIn active but no Easy Apply modal found. BLOCKING all form detection.');
+      return null;
+    }
+
+    // Default: Return the whole document (for all other sites)
+    printLog('[DEBUG] Non-LinkedIn site - using document as root');
+    return document;
+  }
+
   private findFormElements(): FormElement[] {
     const elements: FormElement[] = [];
 
     // Define the selector for form elements
-    const formElementSelector = 'input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget, spl-input, spl-textarea, spl-select, spl-autocomplete, spl-phone-field, spl-checkbox, spl-radio';
+    const formElementSelector = 'input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget, spl-input, spl-textarea, spl-select, spl-autocomplete, spl-phone-field, spl-checkbox, spl-radio-group';
 
-    // 1. Find elements in Light DOM
-    const lightDomInputs = Array.from(document.querySelectorAll(formElementSelector));
+    // 0. Determine the root container (Scope the search)
+    const root = this.findActiveFormContainer();
 
-    // 2. Find elements in Shadow DOM of specific containers (e.g., SmartRecruiters screening form)
+    if (!root) {
+      // Strict mode triggered (e.g., LinkedIn with no modal)
+      return [];
+    }
+
+    // 1. Find elements in Light DOM (scoped to root)
+    const lightDomInputs = Array.from(root.querySelectorAll(formElementSelector));
+
+    // 2. Find elements in Shadow DOM of specific containers (still check document for hosts, or scoped?)
+    //    Ideally scoped, but shadow hosts usually live in the light DOM of the modal.
     const shadowInputs: Element[] = [];
-    const shadowHosts = document.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
+
+    // Note: older logic querySelectorAll on document. If root is an element, we query on it.
+    // However, root could be 'Document'. querySelectorAll works on both.
+    const shadowHosts = root.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
 
     shadowHosts.forEach(host => {
       if (host.shadowRoot) {
@@ -202,6 +360,37 @@ class FormFiller {
       // Skip disabled or readonly inputs
       if ((input as any).disabled || (input as any).readOnly || input.getAttribute('readonly') !== null) {
         return;
+      }
+
+      // Skip cookie consent/preference elements (not part of job application)
+      const cookieKeywords = ['cookie', 'consent', 'gdpr', 'privacy-banner', 'cookie-banner', 'onetrust'];
+      const elementId = (input.id || '').toLowerCase();
+      const elementClass = (input.className || '').toLowerCase();
+      const parentContainer = input.closest('[class*="cookie"], [class*="consent"], [id*="cookie"], [id*="consent"], [id*="onetrust"]');
+      if (parentContainer || cookieKeywords.some(k => elementId.includes(k) || elementClass.includes(k))) {
+        return;
+      }
+
+      // Skip LinkedIn Global Nav and Search Bar (Explicit Safeguard)
+      // This covers ALL search-related elements on LinkedIn, not just global nav
+      const linkedInSearchBlacklist = [
+        '.global-nav__content',
+        '.global-nav',
+        '.jobs-search-box',
+        '.jobs-search-box-flyout-trigger',
+        '.search-global-typeahead',
+        '.reusable-search-filters',
+        '.reusable-search',
+        '.jobs-search-dropdown',
+        '.jobs-search-results-list',
+        '.search-typeahead-v2',
+        '[data-chameleon-app]', // LinkedIn's dynamic search components
+      ];
+      for (const selector of linkedInSearchBlacklist) {
+        if (input.closest(selector)) {
+          printLog(`Skipping LinkedIn search element (${selector}): ${tagName}`);
+          return;
+        }
       }
 
       // Skip hidden elements (CSS hidden or HTML hidden attribute)
@@ -259,8 +448,8 @@ class FormFiller {
           type = 'textarea';
         } else if (tagName === 'spl-checkbox') {
           type = 'checkbox';
-        } else if (tagName === 'spl-radio') {
-          type = 'radio';
+        } else if (tagName === 'spl-radio-group') {
+          type = 'spl-radio-group';
         } else {
           // spl-input, check generic type attribute
           type = input.getAttribute('type') || 'text';
@@ -278,7 +467,8 @@ class FormFiller {
     });
 
     // Also detect complex div-based form elements (DHTMLX, Material forms, etc.)
-    const divBasedElements = this.findDivBasedFormElements();
+    // Pass the scoped root to ensure we don't pick up background elements
+    const divBasedElements = this.findDivBasedFormElements(root);
 
     // Merge, avoiding duplicates (by element reference)
     const existingElements = new Set(elements.map(e => e.element));
@@ -294,7 +484,7 @@ class FormFiller {
   }
 
   // Detect complex div-based form structures (DHTMLX, Material UI, Bootstrap, etc.)
-  private findDivBasedFormElements(): FormElement[] {
+  private findDivBasedFormElements(root: Element | Document = document): FormElement[] {
     const elements: FormElement[] = [];
 
     // Common patterns for div-based form layouts
@@ -310,7 +500,7 @@ class FormFiller {
     ];
 
     for (const pattern of formPatterns) {
-      const wrappers = document.querySelectorAll(pattern.wrapper);
+      const wrappers = root.querySelectorAll(pattern.wrapper);
 
       wrappers.forEach(wrapper => {
         // Find label within wrapper
@@ -369,6 +559,28 @@ class FormFiller {
       return true;
     }
 
+    // Skip LinkedIn Global Nav and Search Bar (Explicit Safeguard)
+    // This covers ALL search-related elements on LinkedIn, not just global nav
+    const linkedInSearchBlacklist = [
+      '.global-nav__content',
+      '.global-nav',
+      '.jobs-search-box',
+      '.jobs-search-box-flyout-trigger',
+      '.search-global-typeahead',
+      '.reusable-search-filters',
+      '.reusable-search',
+      '.jobs-search-dropdown',
+      '.jobs-search-results-list',
+      '.search-typeahead-v2',
+      '[data-chameleon-app]', // LinkedIn's dynamic search components
+    ];
+    for (const selector of linkedInSearchBlacklist) {
+      if (input.closest(selector)) {
+        printLog(`Skipping LinkedIn search element (${selector}): ${tagName}`);
+        return true;
+      }
+    }
+
     // FORCE FILL MODE: Don't skip based on existing values
     // All visible, enabled elements will be filled with LLM responses
 
@@ -402,8 +614,28 @@ class FormFiller {
 
     if (question) return question;
 
+    // Check for aria-labelledby (common in Greenhouse ATS forms)
+    if (!question && element.hasAttribute('aria-labelledby')) {
+      const labelId = element.getAttribute('aria-labelledby');
+      if (labelId) {
+        // Handle multiple IDs (space-separated)
+        const labelIds = labelId.split(/\s+/);
+        for (const id of labelIds) {
+          const labelElement = document.getElementById(id);
+          if (labelElement) {
+            const labelText = labelElement.textContent?.trim() || '';
+            // Skip placeholder labels like "Select..."
+            if (labelText && !labelText.toLowerCase().includes('select...') && labelText.length > 3) {
+              question = labelText;
+              break;
+            }
+          }
+        }
+      }
+    }
+
     // Check for id and associated label
-    if (element.id) {
+    if (!question && element.id) {
       const label = document.querySelector(`label[for="${element.id}"]`);
       if (label) {
         question = label.textContent?.trim() || '';
@@ -631,8 +863,21 @@ class FormFiller {
 
   private extractOptions(element: HTMLElement): string[] {
     const options: string[] = [];
+    const tagName = element.tagName.toLowerCase();
 
-    if (element.tagName.toLowerCase() === 'select') {
+    // Handle spl-radio-group - extract options from child spl-radio elements
+    if (tagName === 'spl-radio-group') {
+      const radioElements = element.querySelectorAll('spl-radio');
+      radioElements.forEach(radio => {
+        const label = radio.getAttribute('label') || radio.textContent?.trim() || '';
+        if (label) {
+          options.push(label);
+        }
+      });
+      return options;
+    }
+
+    if (tagName === 'select') {
       const select = element as HTMLSelectElement;
       Array.from(select.options).forEach(option => {
         if (option.value && option.value !== '') {
@@ -1115,6 +1360,45 @@ class FormFiller {
         }
         break;
 
+      case 'spl-radio-group':
+        // Handle SmartRecruiters spl-radio-group element
+        // Find the matching spl-radio child and click it
+        const splRadioGroup = element as HTMLElement;
+        const splRadios = splRadioGroup.querySelectorAll('spl-radio');
+        const targetValueLower = value.toLowerCase().trim();
+
+        printLog(`SPL Radio Group: looking for "${value}" in ${splRadios.length} options`);
+
+        let foundSplRadio = false;
+        splRadios.forEach((radio) => {
+          if (foundSplRadio) return;
+
+          const radioLabel = (radio.getAttribute('label') || radio.textContent || '').trim();
+          const radioValue = radio.getAttribute('value') || '';
+          const labelLower = radioLabel.toLowerCase();
+
+          // Check for match
+          const isMatch =
+            labelLower === targetValueLower ||
+            radioValue === value ||
+            (targetValueLower === 'yes' && (labelLower === 'yes' || radioValue === '1' || radioValue === 'true')) ||
+            (targetValueLower === 'no' && (labelLower === 'no' || radioValue === '0' || radioValue === 'false'));
+
+          if (isMatch) {
+            (radio as HTMLElement).setAttribute('checked', '');
+            (radio as HTMLElement).setAttribute('aria-checked', 'true');
+            (radio as HTMLElement).click();
+            radio.dispatchEvent(new Event('change', { bubbles: true }));
+            printLog(`✓ Selected spl-radio-group option: "${radioLabel}"`);
+            foundSplRadio = true;
+          }
+        });
+
+        if (!foundSplRadio) {
+          printLog(`⚠ No matching spl-radio-group option found for: ${value}`);
+        }
+        break;
+
       case 'radio':
         // SPECIAL HANDLING: spl-radio (SmartRecruiters custom web component)
         if (element.tagName.toLowerCase() === 'spl-radio') {
@@ -1351,19 +1635,47 @@ class FormFiller {
         // Wait for options to appear
         await this.delay(500);
 
-        // 2. Find options. 
-        // For Workday (listbox), options often have role="option" or are in a container with role="listbox"
-        // For React Select (combobox), options are in a portal
+        // 2. Find options - SCOPED SEARCH
+        // First, try to find options container via aria-controls (Greenhouse/React-Select)
+        let optionsContainer: Element | null = null;
+        const ariaControls = input.getAttribute('aria-controls');
+        if (ariaControls) {
+          optionsContainer = document.getElementById(ariaControls);
+          printLog(`Looking for options in container: #${ariaControls}`);
+        }
+
+        // Also check for parent dropdown container
+        if (!optionsContainer) {
+          optionsContainer = input.closest('.select__container, .select, [class*="dropdown"]');
+        }
+
         const optionSelectors = [
           '[role="option"]',
-          '[class*="option"]',
-          'li[role="presentation"]', // Some frameworks use lists
-          '.active-result', // Chosen/Select2
-          '.wd-list-item' // Workday specific
+          '[class*="option"]:not([class*="container"])',
+          'li[role="presentation"]',
+          '.active-result',
+          '.wd-list-item'
         ];
 
-        const possibleOptions = document.querySelectorAll(optionSelectors.join(', '));
-        printLog(`Found ${possibleOptions.length} possible options in DOM`);
+        // Search in scoped container first, fallback to document if no container found
+        let possibleOptions: NodeListOf<Element>;
+        if (optionsContainer) {
+          possibleOptions = optionsContainer.querySelectorAll(optionSelectors.join(', '));
+          printLog(`Found ${possibleOptions.length} options in scoped container`);
+
+          // If no options in scoped container, React-Select might use a portal
+          // Look for recently opened menu portal
+          if (possibleOptions.length === 0) {
+            const menuPortal = document.querySelector('[class*="menu"][class*="css"]');
+            if (menuPortal) {
+              possibleOptions = menuPortal.querySelectorAll(optionSelectors.join(', '));
+              printLog(`Found ${possibleOptions.length} options in React-Select menu portal`);
+            }
+          }
+        } else {
+          possibleOptions = document.querySelectorAll(optionSelectors.join(', '));
+          printLog(`Found ${possibleOptions.length} possible options in DOM (global search)`);
+        }
 
         let bestMatch: HTMLElement | null = null;
         let matchIndex = -1;
