@@ -371,27 +371,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         return;
       }
 
-      // Skip LinkedIn Global Nav and Search Bar (Explicit Safeguard)
-      // This covers ALL search-related elements on LinkedIn, not just global nav
-      const linkedInSearchBlacklist = [
-        '.global-nav__content',
-        '.global-nav',
-        '.jobs-search-box',
-        '.jobs-search-box-flyout-trigger',
-        '.search-global-typeahead',
-        '.reusable-search-filters',
-        '.reusable-search',
-        '.jobs-search-dropdown',
-        '.jobs-search-results-list',
-        '.search-typeahead-v2',
-        '[data-chameleon-app]', // LinkedIn's dynamic search components
-      ];
-      for (const selector of linkedInSearchBlacklist) {
-        if (input.closest(selector)) {
-          printLog(`Skipping LinkedIn search element (${selector}): ${tagName}`);
-          return;
-        }
-      }
+      // NOTE: LinkedIn search blacklist removed - findActiveFormContainer() already scopes to Easy Apply modal
 
       // Skip hidden elements (CSS hidden or HTML hidden attribute)
       // BUT: Skip these checks for spl-* elements (custom components may have non-standard styling)
