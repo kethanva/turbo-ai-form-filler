@@ -6,3 +6,4 @@ CHROME_DATA/
 
 # Secrets - DO NOT COMMIT
 config/secrets.json
+config/personals.json
