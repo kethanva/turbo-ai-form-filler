@@ -260,24 +260,31 @@ JavaScript arrays start at index 0. To find the correct entry:
 **Formula: array[Entry_Number - 1]**
 
 1. **FOR ANY QUESTION WITH [Entry: X]**: Extract ONLY from the arrays above.
-   - "Start Date [Entry: 6]" → experience_details[5].from → "2008-12" → "12/01/2008"
-   - "Employer [Entry: 6]" → experience_details[5].companyKey → "mphasis" (NOT "tavant"!)
-   - "End Year [Entry: 1]" → education_details[0].to → "2021-10" → "2021"
+   - "Start Date [Entry: 6]" → experience_details[5].start_date → "12/2008" → "12/2008"
+   - "Employer [Entry: 6]" → experience_details[5].company → "Mphasis" (NOT "Tavant"!)
+   - "End Year [Entry: 1]" → education_details[0].to → "10/2021" → "2021"
    - DO NOT use any data from the "General Context" section below
    - DO NOT use highlights, industry, description, or any text data
 
-2. **DATE FIELDS**: For "Start Date" or "End Date" questions:
-   - Extract from the .from or .to field in the JSON array
-   - **CRITICAL**: Convert YYYY-MM format to MM/01/YYYY
-   - **CRITICAL**: If the value is "Present", you MUST return "12/31/2025" NOT the from date
+2. **DATE FIELDS**: For "Start Date" or "End Date" or "From" or "To" questions:
+   - Extract from the .start_date or .end_date field (for experience) or .from/.to (for education)
+   - **CRITICAL**: The data is ALREADY in MM/YYYY format - just use it directly!
+   - **CRITICAL**: If the value is "Present", you MUST return "12/31/2025" NOT the start date
+   - **CRITICAL**: For "To" questions, use .end_date NOT .start_date!
    
-   **EXAMPLES**:
-   - "From [Entry: 1]" → experience_details[0].from → "2022-02" → return "02/01/2022"
-   - "To [Entry: 1]" → experience_details[0].to → "Present" → return "12/31/2025" (NOT "02/01/2022"!)
-   - "From [Entry: 2]" → experience_details[1].from → "2019-03" → return "03/01/2019"
-   - "To [Entry: 2]" → experience_details[1].to → "2022-02" → return "02/01/2022"
-   - "From [Entry: 3]" → experience_details[2].from → "2013-11" → return "11/01/2013"
-   - "To [Entry: 3]" → experience_details[2].to → "2019-03" → return "03/01/2019" (NOT "11/01/2013"!)
+   **WORK EXPERIENCE DATES - ALL 6 ENTRIES**:
+   - "From [Entry: 1]" = start_date[0] = "02/2022" → return "02/2022"
+   - "To [Entry: 1]"   = end_date[0]   = "Present" → return "12/31/2025"
+   - "From [Entry: 2]" = start_date[1] = "03/2019" → return "03/2019"
+   - "To [Entry: 2]"   = end_date[1]   = "02/2022" → return "02/2022" (NOT 12/31/2025!)
+   - "From [Entry: 3]" = start_date[2] = "11/2013" → return "11/2013"
+   - "To [Entry: 3]"   = end_date[2]   = "03/2019" → return "03/2019"
+   - "From [Entry: 4]" = start_date[3] = "01/2012" → return "01/2012"
+   - "To [Entry: 4]"   = end_date[3]   = "11/2013" → return "11/2013" (NOT 03/2011!)
+   - "From [Entry: 5]" = start_date[4] = "03/2011" → return "03/2011"
+   - "To [Entry: 5]"   = end_date[4]   = "01/2012" → return "01/2012"
+   - "From [Entry: 6]" = start_date[5] = "12/2008" → return "12/2008"
+   - "To [Entry: 6]"   = end_date[5]   = "03/2011" → return "03/2011"
 
 3. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
    - Extract from the .from or .to field in the JSON array
@@ -311,34 +318,67 @@ ${userInfo}
 `;
 
     // If we have Entry-based questions, inject structured arrays
-    // This block is now always included as per the HEAD version logic
+    // DYNAMICALLY generate from personals.json data - NOT HARDCODED!
+    const experienceEntries = personalsData.experience_details || [];
+    const educationEntries = personalsData.education_details || [];
+
+    // Format experience data for LLM
+    const formattedExperience = experienceEntries.map((exp: any, idx: number) => {
+      // Convert date format from MM-YYYY to MM/YYYY for consistency
+      const fromDate = (exp.from || '').replace('-', '/');
+      const toDate = (exp.to || 'Present').replace('-', '/');
+      return {
+        entry: idx + 1,
+        company: exp.companyKey || exp.company || '',
+        title: exp.title || '',
+        location: exp.location || 'Bangalore, India',
+        start_date: fromDate,
+        end_date: toDate,
+        currently_work_here: (exp.to || '').toLowerCase() === 'present'
+      };
+    });
+
+    // Format education data for LLM
+    const formattedEducation = educationEntries.map((edu: any, idx: number) => {
+      const fromDate = (edu.from || '').replace('-', '/');
+      const toDate = (edu.to || '').replace('-', '/');
+      // Extract just the year for graduation_year
+      const gradYear = toDate.split('/').pop() || '';
+      return {
+        entry: idx + 1,
+        school: edu.institution || edu.school || '',
+        degree: edu.degree || '',
+        field: edu.field || 'Computer Science',
+        start_year: fromDate.split('/').pop() || '',
+        graduation_year: gradYear,
+        from: fromDate,
+        to: toDate,
+        gpa: edu.gpa || personalsData.gpa || '3.5'
+      };
+    });
+
     batchPrompt += `
 
 === STRUCTURED DATA FOR REPEATING SECTIONS ===
 
 **EXPERIENCE_DETAILS** (use for Work Experience questions):
-[
-  {"entry": 1, "company": "UHG Optum Labs", "title": "Principal Engineer", "location": "Bangalore, India", "start_date": "02/2022", "end_date": "Present", "currently_work_here": true},
-  {"entry": 2, "company": "BMC Netreo", "title": "Cloud Lead", "location": "Remote, USA", "start_date": "06/2019", "end_date": "01/2022", "currently_work_here": false},
-  {"entry": 3, "company": "VMware", "title": "Senior Member of Technical Staff", "location": "Bangalore, India", "start_date": "06/2013", "end_date": "05/2019", "currently_work_here": false},
-  {"entry": 4, "company": "CGI", "title": "Senior Software Engineer", "location": "Bangalore, India", "start_date": "08/2012", "end_date": "05/2013", "currently_work_here": false},
-  {"entry": 5, "company": "Tavant", "title": "Software Engineer", "location": "Bangalore, India", "start_date": "06/2011", "end_date": "07/2012", "currently_work_here": false},
-  {"entry": 6, "company": "Mphasis", "title": "Software Engineer", "location": "Bangalore, India", "start_date": "04/2008", "end_date": "05/2011", "currently_work_here": false}
-]
+${JSON.stringify(formattedExperience, null, 2)}
 
 **EDUCATION_DETAILS** (use for Education questions):
-[
-  {"entry": 1, "school": "Liverpool John Moores University, UK", "degree": "Master of Science (M.S.)", "field": "Computer Science", "graduation_year": "2021", "gpa": "3.5"},
-  {"entry": 2, "school": "K.S.I.T (V.T.U), Bangalore", "degree": "Bachelor of Engineering (B.E.)", "field": "Computer Science", "graduation_year": "2008", "gpa": "3.2"}
-]
+${JSON.stringify(formattedEducation, null, 2)}
 
 **CRITICAL INDEXING INSTRUCTIONS:**
-- When you see [Entry: 1] -> use experience_details[0] or education_details[0] (ARRAY INDEX = Entry Number - 1)
-- When you see [Entry: 2] -> use experience_details[1] or education_details[1]
-- When you see [Entry: 3] -> use experience_details[2] or education_details[2]
-- When you see [Entry: 6] -> use experience_details[5] or education_details[5]
-- EXAMPLE: "Company [Entry: 2]" = experience_details[1].company = "BMC Netreo"
-- EXAMPLE: "School [Entry: 1]" = education_details[0].school = "Liverpool John Moores University, UK"
+- [Entry: 1] → use array index [0] (Entry Number - 1)
+- [Entry: 2] → use array index [1]
+- [Entry: 3] → use array index [2]
+- [Entry: 4] → use array index [3]
+- [Entry: 5] → use array index [4]
+- [Entry: 6] → use array index [5]
+
+**COMMON MISTAKES TO AVOID:**
+- "To [Entry: 2]" should return "02/2022" NOT "12/31/2025" (Entry 2 is BMC Netreo which ended in 02/2022)
+- "To [Entry: 4]" should return "11/2013" NOT "01/2012" or "03/2011" (Entry 4 is CGI which ended in 11/2013)
+- ONLY Entry 1 (UHG Optum Labs) has "Present" as end_date, so ONLY Entry 1 should return "12/31/2025" for "To"
 
 DO NOT just return the entry number! Look up the actual data from the arrays!
 `;
