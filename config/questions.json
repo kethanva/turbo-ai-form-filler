@@ -57,7 +57,7 @@
         "    - Look for X-th item in Experience/Education list",
         "    - Use ONLY that entry's data, do NOT combine entries",
         "    - If X missing/out of bounds, use 1st entry",
-        "    - Location questions → \"Bangalore, Karnataka, India\"",
+        "    - Location questions → \"Bangalore, India\"",
         "    - EXCEPTION: CTC/Salary → Return numeric value, not location",
         "",
         "**User Information:**",

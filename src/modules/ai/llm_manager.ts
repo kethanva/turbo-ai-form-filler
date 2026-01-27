@@ -84,7 +84,42 @@ export class LLMManager {
 
     const secrets = await loadSecrets();
     const personalsData = getPersonalsSync() || await loadPersonals();
-    const userInfo = userInformationAll || configContext || JSON.stringify(personalsData);
+
+    // ENHANCEMENT: If question targets a specific Entry (e.g., "[Entry: 2]"), 
+    // inject the structured data context to ensure correct indexing.
+    // This fixes the issue where single re-asks (e.g. for dropdowns) lose context and default to Entry 1.
+    let finalUserInfo = userInformationAll || configContext;
+
+    if (!finalUserInfo && question.includes('[Entry:')) {
+      const experienceData = JSON.stringify(personalsData.experience_details || [], null, 2);
+      const educationData = JSON.stringify(personalsData.education_details || [], null, 2);
+
+      finalUserInfo = `
+=== STRUCTURED DATA FOR REPEATING SECTIONS ===
+
+**EXPERIENCE_DETAILS** (use for Work Experience questions):
+${experienceData}
+
+**EDUCATION_DETAILS** (use for Education questions):
+${educationData}
+
+**CRITICAL INDEXING INSTRUCTIONS:**
+- When you see [Entry: 1] -> use experience_details[0] or education_details[0] (ARRAY INDEX = Entry Number - 1)
+- When you see [Entry: 2] -> use experience_details[1] or education_details[1]
+- When you see [Entry: 3] -> use experience_details[2] or education_details[2]
+- EXAMPLE: "Company [Entry: 2]" = experience_details[1].company = "BMC Netreo"
+- EXAMPLE: "School [Entry: 2]" = education_details[1].school = "K.S.I.T (V.T.U), Bangalore"
+
+DO NOT use the first entry if the question asks for Entry 2, 3, etc.
+DO NOT return "N/A" if data exists in the array at that index.
+
+=== General Context ===
+${JSON.stringify(personalsData)}
+`;
+      printLog(`🔧 Injected structured context for Entry-based question: "${question}"`);
+    } else if (!finalUserInfo) {
+      finalUserInfo = JSON.stringify(personalsData);
+    }
 
     // Try providers in order starting from current fallback index
     for (let i = this.currentFallbackIndex; i < this.providerPriority.length; i++) {
@@ -110,7 +145,7 @@ export class LLMManager {
             questionType,
             jobDescription,
             undefined,
-            userInfo,
+            finalUserInfo,
             configContext
           );
         } else if (provider === "huggingface") {
@@ -121,7 +156,7 @@ export class LLMManager {
             questionType,
             jobDescription,
             undefined,
-            userInfo,
+            finalUserInfo,
             configContext
           );
         }
@@ -250,7 +285,7 @@ JavaScript arrays start at index 0. To find the correct entry:
 
 4. **LOCATION FIELDS**: 
    - **IF AND ONLY IF** the question asks for "Location", "City", "Place", or "Address" (specifically for Work/Education):
-   - **THEN** return "Bangalore, Karnataka, India".
+   - **THEN** return "Bangalore, India".
    - **CRITICAL EXCEPTION**: If the question asks for "Salary", "CTC", "Compensation", or "Pay", SKIP this rule and see Rule 5.
    
 5. **SALARY / CTC / COMPENSATION FIELDS**:
@@ -262,7 +297,7 @@ JavaScript arrays start at index 0. To find the correct entry:
    **EXAMPLES**:
    - "Current CTC?" → "80000"
    - "Expected Salary?" → "85000"
-   - "What is your current Location?" → "Bangalore, Karnataka, India"
+   - "What is your current Location?" → "Bangalore, India"
 
 6. **NOTICE PERIOD**:
     - "Notice Period" -> Extract from "Notice Period" or "soon_join_us" (e.g. "60 days")
@@ -283,12 +318,12 @@ ${userInfo}
 
 **EXPERIENCE_DETAILS** (use for Work Experience questions):
 [
-  {"entry": 1, "company": "UHG Optum Labs", "title": "Principal Engineer", "location": "Bangalore, Karnataka, India", "start_date": "02/2022", "end_date": "Present", "currently_work_here": true},
+  {"entry": 1, "company": "UHG Optum Labs", "title": "Principal Engineer", "location": "Bangalore, India", "start_date": "02/2022", "end_date": "Present", "currently_work_here": true},
   {"entry": 2, "company": "BMC Netreo", "title": "Cloud Lead", "location": "Remote, USA", "start_date": "06/2019", "end_date": "01/2022", "currently_work_here": false},
-  {"entry": 3, "company": "VMware", "title": "Senior Member of Technical Staff", "location": "Bangalore, Karnataka, India", "start_date": "06/2013", "end_date": "05/2019", "currently_work_here": false},
-  {"entry": 4, "company": "CGI", "title": "Senior Software Engineer", "location": "Bangalore, Karnataka, India", "start_date": "08/2012", "end_date": "05/2013", "currently_work_here": false},
-  {"entry": 5, "company": "Tavant", "title": "Software Engineer", "location": "Bangalore, Karnataka, India", "start_date": "06/2011", "end_date": "07/2012", "currently_work_here": false},
-  {"entry": 6, "company": "Mphasis", "title": "Software Engineer", "location": "Bangalore, Karnataka, India", "start_date": "04/2008", "end_date": "05/2011", "currently_work_here": false}
+  {"entry": 3, "company": "VMware", "title": "Senior Member of Technical Staff", "location": "Bangalore, India", "start_date": "06/2013", "end_date": "05/2019", "currently_work_here": false},
+  {"entry": 4, "company": "CGI", "title": "Senior Software Engineer", "location": "Bangalore, India", "start_date": "08/2012", "end_date": "05/2013", "currently_work_here": false},
+  {"entry": 5, "company": "Tavant", "title": "Software Engineer", "location": "Bangalore, India", "start_date": "06/2011", "end_date": "07/2012", "currently_work_here": false},
+  {"entry": 6, "company": "Mphasis", "title": "Software Engineer", "location": "Bangalore, India", "start_date": "04/2008", "end_date": "05/2011", "currently_work_here": false}
 ]
 
 **EDUCATION_DETAILS** (use for Education questions):

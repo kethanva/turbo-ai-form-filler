@@ -363,7 +363,14 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
 
       // Skip disabled or readonly inputs
-      if ((input as any).disabled || (input as any).readOnly || input.getAttribute('readonly') !== null) {
+      // BUT: Allow Freshteam datepicker inputs (they use Bootstrap datepicker with readonly)
+      const isFreshteamDatepicker = input.classList.contains('start_date') ||
+        input.classList.contains('end_date') ||
+        input.closest('.datepicker-popover') !== null;
+      if ((input as any).disabled) {
+        return;
+      }
+      if (((input as any).readOnly || input.getAttribute('readonly') !== null) && !isFreshteamDatepicker) {
         return;
       }
 
@@ -503,15 +510,46 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
           const options = this.extractOptions(controlEl);
 
+          // Build question with label + entry context for Freshteam
+          let question = labelText;
+
+          // Add Freshteam employer entry context
+          const employerGroup = controlEl.closest('.employer-group');
+          if (employerGroup) {
+            const employerContainer = employerGroup.parentElement;
+            if (employerContainer) {
+              const allEmployerGroups = Array.from(employerContainer.querySelectorAll('.employer-group'));
+              const entryIndex = allEmployerGroups.indexOf(employerGroup as Element) + 1;
+              if (entryIndex > 0) {
+                question += ` [Position Entry: ${entryIndex}]`;
+                printLog(`Freshteam div-based: Position Entry ${entryIndex} for "${labelText}"`);
+              }
+            }
+          }
+
+          // Add Freshteam education entry context
+          const educationGroup = controlEl.closest('.education-group');
+          if (educationGroup) {
+            const educationContainer = educationGroup.parentElement;
+            if (educationContainer) {
+              const allEducationGroups = Array.from(educationContainer.querySelectorAll('.education-group'));
+              const entryIndex = allEducationGroups.indexOf(educationGroup as Element) + 1;
+              if (entryIndex > 0) {
+                question += ` [Education Entry: ${entryIndex}]`;
+                printLog(`Freshteam div-based: Education Entry ${entryIndex} for "${labelText}"`);
+              }
+            }
+          }
+
           elements.push({
             element: controlEl,
             type: controlEl.type || (controlEl.tagName.toLowerCase() === 'select' ? 'select-one' : 'text'),
             tagName: controlEl.tagName.toLowerCase(),
-            question: labelText,
+            question,
             options
           });
 
-          printLog(`Div-based element found: "${labelText}" (type: ${controlEl.type || 'text'})`);
+          printLog(`Div-based element found: "${question}" (type: ${controlEl.type || 'text'})`);
         }
       });
     }
@@ -646,6 +684,40 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
     }
 
+    // --- GEM / GENERIC SIBLING LABEL SUPPORT ---
+    // Handles forms where the label is a sibling of the input's container (e.g. Gem forms)
+    // Structure: Container -> Span (Label) + Div (Input Wrapper) -> Input
+    if (!question) {
+      let current = element.parentElement;
+      // Go up up to 5 levels to find a container that shares a parent with the label
+      for (let i = 0; i < 5 && current; i++) {
+        const parent = current.parentElement;
+        if (parent) {
+          // Look for a preceding sibling of 'current' that looks like a label
+          // Gem uses spans, often with classes like "bodyImportant-..."
+          let sibling = current.previousElementSibling;
+          while (sibling) {
+            const tag = sibling.tagName;
+            if (tag === 'SPAN' || tag === 'LABEL' || tag === 'DIV') {
+              const text = sibling.textContent?.trim();
+              // Heuristic: Label shouldn't be too long, must have some text
+              if (text && text.length > 2 && text.length < 100) {
+                // Avoid irrelevant siblings
+                if (!text.toLowerCase().includes('required') || text.length > 10) {
+                  // Clean up asterisks if detached
+                  question = text.replace(/\*$/, '').trim();
+                  break;
+                }
+              }
+            }
+            sibling = sibling.previousElementSibling;
+          }
+        }
+        if (question) break;
+        current = parent;
+      }
+    }
+
     // Check for aria-label (but ignore generic "Select One" labels)
     if (!question) {
       const ariaLabel = element.getAttribute('aria-label') || '';
@@ -679,10 +751,16 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     // Check for nearby text using more aggressive upward traversal (fixing "Type your response" issue)
     // Common ATS patterns: Greenhouse (.application-question), Lever, etc.
     if (!question) {
-      // 1. Check specific known patterns (Greenhouse, etc.)
-      const greenhouseWrapper = element.closest('.application-question, .field, .form-group, .form-item, tr');
-      if (greenhouseWrapper) {
-        const potentialLabel = greenhouseWrapper.querySelector('.application-label, .label, .field-label, label, .text, th');
+      // 1. Check specific known patterns (Greenhouse, Freshteam, etc.)
+      // NOTE: In Freshteam, inputs themselves have class="form-group", so we must
+      // start from parentElement to find the actual wrapper div
+      let wrapperSearchStart: Element | null = element;
+      if (element.classList.contains('form-group') || element.classList.contains('form-control')) {
+        wrapperSearchStart = element.parentElement;
+      }
+      const formGroupWrapper = wrapperSearchStart?.closest('.application-question, .field, .form-group, .form-item, tr');
+      if (formGroupWrapper) {
+        const potentialLabel = formGroupWrapper.querySelector('.application-label, .label, .field-label, label, .text, th');
         if (potentialLabel) {
           // Ensure this label isn't for another input (basic check)
           question = potentialLabel.textContent?.trim() || '';
@@ -703,8 +781,23 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     }
 
     // Check for name attribute
+    // Special handling for Freshteam nested names like "applicant[lead_attributes[first_name]]"
     if (!question) {
-      question = element.getAttribute('name') || '';
+      const nameAttr = element.getAttribute('name') || '';
+      if (nameAttr) {
+        // Try to extract meaningful field name from Freshteam's bracket notation
+        // Pattern: applicant[lead_attributes[field_name]] or applicant[lead_attributes][section_attributes][][field]
+        const freshteamMatch = nameAttr.match(/\[([^\[\]]+)\](?:\[\])?$/);
+        if (freshteamMatch) {
+          // Extract the last bracketed value (the actual field name)
+          const fieldName = freshteamMatch[1];
+          // Humanize: first_name -> First Name, school_name -> School Name
+          question = fieldName.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          // printLog(`Freshteam field extracted: ${fieldName} -> ${question}`);
+        } else {
+          question = nameAttr;
+        }
+      }
     }
 
     // CHECK PLACEHOLDER LAST (Fallback)
@@ -728,6 +821,17 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       const selfId = element.getAttribute('data-automation-id');
       if (selfId) {
         question += ` [Workday ID: ${selfId}]`;
+      }
+    }
+
+    // Workday Date Spinbutton Disambiguation
+    // Ensure the LLM knows if it's filling the "Month" or "Year" part of a date
+    if (element.getAttribute('role') === 'spinbutton') {
+      const ariaLabel = element.getAttribute('aria-label');
+      if (ariaLabel === 'Month' || ariaLabel === 'Year') {
+        if (!question.toLowerCase().includes(ariaLabel.toLowerCase())) {
+          question += ` - ${ariaLabel}`;
+        }
       }
     }
 
@@ -821,6 +925,130 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         } else {
           // Fallback: just append the row text
           question += ` [${rowText}]`;
+        }
+      }
+    }
+    // --------------------------------
+    // --------------------------------
+    // --- FRESHTEAM EMPLOYER/EDUCATION ENTRY HANDLING ---
+    // Detects dynamically added employer and education entries in Freshteam forms
+    // Each employer-group or education-group is a repeating section
+    if (!rowText) {
+      // Check if element is inside an employer-group
+      const employerGroup = element.closest('.employer-group');
+      if (employerGroup) {
+        // Find parent container that holds all employer groups
+        const employerContainer = employerGroup.parentElement;
+        if (employerContainer) {
+          const allEmployerGroups = Array.from(employerContainer.querySelectorAll('.employer-group'));
+          const entryIndex = allEmployerGroups.indexOf(employerGroup as Element) + 1;
+          if (entryIndex > 0) {
+            question += ` [Position Entry: ${entryIndex}]`;
+            printLog(`Freshteam context added: Position Entry ${entryIndex}`);
+          }
+        }
+      }
+
+      // Check if element is inside an education-group
+      const educationGroup = element.closest('.education-group');
+      if (educationGroup) {
+        // Find parent container that holds all education groups
+        const educationContainer = educationGroup.parentElement;
+        if (educationContainer) {
+          const allEducationGroups = Array.from(educationContainer.querySelectorAll('.education-group'));
+          const entryIndex = allEducationGroups.indexOf(educationGroup as Element) + 1;
+          if (entryIndex > 0) {
+            question += ` [Education Entry: ${entryIndex}]`;
+            printLog(`Freshteam context added: Education Entry ${entryIndex}`);
+          }
+        }
+      }
+    }
+
+    // --- GENERIC REPEATER DETECTION (e.g. Breezy HR, Workable, etc.) ---
+    // Looks for elements inside repeating list items or divs
+    if (!rowText) { // Still check !rowText because Freshteam logic above might not have set rowText, it appends to question directly.
+      // Wait, Freshteam logic appends to question but doesn't set rowText.
+      // If Freshteam logic triggered, we probably don't want to double-tag.
+      // But question += ... above.
+
+      // 1. Find the closest "repeater item" candidate
+      // We look for LI elements or DIVs with specific classes that suggest repetition
+      const repeaterItem = element.closest('li, .experience, .education, .employment, .position, .job, .school, .repeater-item, [ng-repeat]');
+
+      if (repeaterItem && repeaterItem.parentElement) {
+        // Check if this item has siblings of the same tag/class structure
+        const siblings = Array.from(repeaterItem.parentElement.children).filter(child => {
+          // Match tag name
+          if (child.tagName !== repeaterItem.tagName) return false;
+          // If it's a div, ensure it has similar classes (simple heuristic)
+          if (child.tagName === 'DIV' && child.className !== repeaterItem.className) return false;
+          // Exclude irrelevant elements (like breaks or hidden inputs if they appear as siblings)
+          return child.clientHeight > 0 || child.tagName === 'LI';
+        });
+
+        // Only treat as repeater if there are multiple similar items OR if it's an ng-repeat/li structure 
+        // that clearly looks like a list (even if size is 1 currently, it MIGHT be a list).
+        // For safety, we often want to be sure it's a "section" repeater. 
+        // Let's assume if it's an LI inside a UL/OL, it's a list item.
+
+        const isList = repeaterItem.tagName === 'LI';
+        const hassiblings = siblings.length > 0; // It's always >0 because it includes itself
+
+        if (isList || hassiblings) {
+          const index = siblings.indexOf(repeaterItem as Element);
+          if (index >= 0) {
+            const entryNum = index + 1;
+
+            // Check if we already have an Entry tag (e.g. from Freshteam logic)
+            if (!question.includes('[Position Entry:') && !question.includes('[Education Entry:')) {
+              // NOW: Determine the CONTEXT (Experience vs Education)
+              // Walk up from the container to find a Header
+              let sectionType = '';
+              let current: HTMLElement | null = repeaterItem.parentElement; // Fix: Explicit type
+              for (let i = 0; i < 5 && current; i++) {
+                // Check previous siblings for Header
+                let prev = current.previousElementSibling;
+                while (prev) {
+                  const combinedText = (prev.textContent || '').toLowerCase();
+                  if (combinedText.includes('experience') || combinedText.includes('work history') || combinedText.includes('employment')) {
+                    sectionType = 'Position';
+                    break;
+                  }
+                  if (combinedText.includes('education') || combinedText.includes('academic') || combinedText.includes('school')) {
+                    sectionType = 'Education';
+                    break;
+                  }
+                  prev = prev.previousElementSibling;
+                  // Don't go back too far
+                  if (combinedText.length > 200) break;
+                }
+                if (sectionType) break;
+
+                // Also check the container's own text (e.g. h3 inside the section)
+                current = current.parentElement;
+              }
+
+              // If no section type found via header, try to guess from the inputs inside the item
+              if (!sectionType) {
+                const itemText = (repeaterItem.textContent || '').toLowerCase();
+                if (itemText.includes('degree') || itemText.includes('major') || itemText.includes('school')) {
+                  sectionType = 'Education';
+                } else if (itemText.includes('company') && itemText.includes('title')) {
+                  sectionType = 'Position';
+                }
+              }
+
+              if (sectionType) {
+                question += ` [${sectionType} Entry: ${entryNum}]`;
+                printLog(`Generic Repeater Context: ${sectionType} Entry ${entryNum}`);
+              } else if (siblings.length > 1) {
+                // Even if we don't know the type, if there are multiple items, tagging them distinguishes them
+                question += ` [Entry: ${entryNum}]`;
+                printLog(`Generic Repeater Context: Entry ${entryNum}`);
+              }
+            }
+          }
         }
       }
     }
@@ -1089,52 +1317,101 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         const ariaLabel = input.getAttribute('aria-label') || '';
 
         if (spinRole === 'spinbutton' && (ariaLabel === 'Month' || ariaLabel === 'Year')) {
-          // This is a Workday date spinbutton - parse MM/YYYY format
-          const dateMatch = value.match(/(\d{1,2})\/(\d{4})/);
-          if (dateMatch) {
-            const month = parseInt(dateMatch[1]);
-            const year = parseInt(dateMatch[2]);
+          // This is a Workday date spinbutton
+          let month: number | null = null;
+          let year: number | null = null;
 
+          // Attempt 1: Parse as full date (ISO, MM/YYYY, etc.)
+          const parsedISO = this.parseDateToISO(value);
+          if (parsedISO) {
+            const parts = parsedISO.split('-');
+            year = parseInt(parts[0]);
+            month = parseInt(parts[1]);
+          } else {
+            // Attempt 2: Check for MM/YYYY regex specifically
+            const slashMatch = value.match(/(\d{1,2})\/(\d{4})/);
+            if (slashMatch) {
+              month = parseInt(slashMatch[1]);
+              year = parseInt(slashMatch[2]);
+            } else {
+              // Attempt 3: Handle individual values (likely due to disambiguated prompt)
+              const valInt = parseInt(value.replace(/[^0-9]/g, ''));
+              if (!isNaN(valInt)) {
+                if (ariaLabel === 'Month' && valInt >= 1 && valInt <= 12) {
+                  month = valInt;
+                } else if (ariaLabel === 'Year' && valInt > 0) {
+                  year = valInt;
+                  // Handle 2-digit years (e.g. "03" -> 2003, "99" -> 1999)
+                  if (year < 100) {
+                    const currentYear = new Date().getFullYear();
+                    const currentCentury = Math.floor(currentYear / 100) * 100;
+                    // If year + 2000 is in the future (e.g. 30 -> 2030), maybe it's 1930?
+                    // But for work experience, 2030 is unlikely.
+                    // Simple logic: < 50 -> 20xx, >= 50 -> 19xx
+                    // Adjust as needed. Given the issue 0003, user likely meant 2003.
+                    if (year < 50) {
+                      year += 2000;
+                    } else {
+                      year += 1900;
+                    }
+                    printLog(`⚠ Converted 2-digit year ${valInt} to ${year}`);
+                  }
+                }
+              }
+            }
+          }
+
+          if (month !== null || year !== null) {
             // Find the parent dateInputWrapper to locate both Month and Year inputs
             const dateWrapper = input.closest('[data-automation-id="dateInputWrapper"]');
+
+            // Helper to set spinbutton value
+            const setSpinValue = (el: HTMLInputElement, val: number) => {
+              el.value = String(val);
+              el.setAttribute('aria-valuenow', String(val));
+              el.setAttribute('aria-valuetext', String(val));
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('blur', { bubbles: true }));
+            };
+
             if (dateWrapper) {
               const monthInput = dateWrapper.querySelector('[data-automation-id="dateSectionMonth-input"]') as HTMLInputElement;
               const yearInput = dateWrapper.querySelector('[data-automation-id="dateSectionYear-input"]') as HTMLInputElement;
 
               if (monthInput && yearInput) {
-                // Set both values
-                monthInput.value = String(month);
-                monthInput.setAttribute('aria-valuenow', String(month));
-                monthInput.setAttribute('aria-valuetext', String(month));
-                monthInput.dispatchEvent(new Event('input', { bubbles: true }));
-                monthInput.dispatchEvent(new Event('change', { bubbles: true }));
-                monthInput.dispatchEvent(new Event('blur', { bubbles: true }));
+                // If we have extracted both month and year (from full date), set both
+                if (month !== null && year !== null) {
+                  setSpinValue(monthInput, month);
+                  setSpinValue(yearInput, year);
+                  printLog(`✓ Set Workday date spinbuttons (Sync): Month=${month}, Year=${year}`);
+                  break; // Done
+                }
 
-                yearInput.value = String(year);
-                yearInput.setAttribute('aria-valuenow', String(year));
-                yearInput.setAttribute('aria-valuetext', String(year));
-                yearInput.dispatchEvent(new Event('input', { bubbles: true }));
-                yearInput.dispatchEvent(new Event('change', { bubbles: true }));
-                yearInput.dispatchEvent(new Event('blur', { bubbles: true }));
-
-                printLog(`✓ Set Workday date spinbuttons: Month=${month}, Year=${year}`);
-                break; // Exit the switch
+                // If we only have specific parts (because LLM answered "month" or "year" question)
+                if (ariaLabel === 'Month' && month !== null) {
+                  setSpinValue(monthInput, month);
+                  printLog(`✓ Set Workday Month spinbutton: ${month}`);
+                  break;
+                }
+                if (ariaLabel === 'Year' && year !== null) {
+                  setSpinValue(yearInput, year);
+                  printLog(`✓ Set Workday Year spinbutton: ${year}`);
+                  break;
+                }
               }
             }
 
-            // Fallback: Set just this spinbutton with the appropriate part
-            if (ariaLabel === 'Month') {
-              input.value = String(month);
-              input.setAttribute('aria-valuenow', String(month));
-              printLog(`✓ Set Month spinbutton: ${month}`);
-            } else if (ariaLabel === 'Year') {
-              input.value = String(year);
-              input.setAttribute('aria-valuenow', String(year));
-              printLog(`✓ Set Year spinbutton: ${year}`);
+            // Fallback if no wrapper found or simple structure
+            if (ariaLabel === 'Month' && month !== null) {
+              setSpinValue(input as HTMLInputElement, month);
+              printLog(`✓ Set Month spinbutton (fallback): ${month}`);
+              break;
+            } else if (ariaLabel === 'Year' && year !== null) {
+              setSpinValue(input as HTMLInputElement, year);
+              printLog(`✓ Set Year spinbutton (fallback): ${year}`);
+              break;
             }
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-            break;
           }
         }
 
