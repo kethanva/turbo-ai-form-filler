@@ -541,6 +541,21 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             }
           }
 
+          // Add array-indexed ID detection (Phenom/Cisco forms: experienceData[0].title, educationData[1].schoolName)
+          // Also check parent fieldset IDs for nested inputs
+          const elementId = controlEl.id || '';
+          const fieldsetEl = controlEl.closest('fieldset');
+          const fieldsetId = fieldsetEl?.id || '';
+          const idToCheck = elementId || fieldsetId;
+
+          const arrayIndexMatch = idToCheck.match(/(experience|education|employment|work|job|school)Data?\[(\d+)\]/i);
+          if (arrayIndexMatch && !question.includes('[Entry:') && !question.includes('Entry:')) {
+            const entryType = arrayIndexMatch[1]; // e.g., "experience", "education"
+            const entryNum = parseInt(arrayIndexMatch[2]) + 1; // Convert 0-indexed to 1-indexed
+            question += ` [${entryType.charAt(0).toUpperCase() + entryType.slice(1)} Entry: ${entryNum}]`;
+            printLog(`Div-based array-indexed: ${entryType} Entry ${entryNum} for "${labelText}"`);
+          }
+
           elements.push({
             element: controlEl,
             type: controlEl.type || (controlEl.tagName.toLowerCase() === 'select' ? 'select-one' : 'text'),
@@ -635,7 +650,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
     }
 
-    if (question) return question;
+    // Don't return early here - we need to continue to add entry context at the end
+    // if (question) return question;
 
     // Check for aria-labelledby (common in Greenhouse ATS forms)
     if (!question && element.hasAttribute('aria-labelledby')) {
@@ -869,7 +885,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             const labelElement = document.getElementById(labelId);
             if (labelElement) {
               const labelText = labelElement.textContent?.trim() || '';
-              const workdayMatch = labelText.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+              const workdayMatch = labelText.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
               if (workdayMatch) {
                 rowText = labelText;
                 printLog(`Found Workday section via aria-labelledby: ${rowText}`);
@@ -887,7 +903,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             const textContent = current.textContent || '';
 
             // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
-            const workdayMatch = textContent.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+            const workdayMatch = textContent.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
             if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
               rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
               printLog(`Found Workday section: ${rowText}`);
@@ -917,7 +933,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         printLog(`Context added: Entry ${entryNum} for field (Row number)`);
       } else {
         // Try Workday patterns
-        match = rowText.match(/(Work Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+        match = rowText.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
         if (match) {
           const entryNum = match[2];
           question += ` [Entry: ${entryNum}]`;
