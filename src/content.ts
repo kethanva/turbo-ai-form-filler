@@ -16,12 +16,16 @@ interface FormElement {
 
 // === HELPER FUNCTIONS ===
 
+// Cache hostname checks once per page load (hostname never changes mid-session)
+const _hostname = window.location.hostname.toLowerCase();
+const _isWorkday = _hostname.includes('workday.com') || _hostname.includes('myworkday.com');
+const _isLinkedIn = _hostname.includes('linkedin.com');
+
 /**
  * Detect if current page is Workday (needs delays for bot detection evasion)
  */
 function isWorkdayDomain(): boolean {
-  const hostname = window.location.hostname.toLowerCase();
-  return hostname.includes('workday.com') || hostname.includes('myworkday.com');
+  return _isWorkday;
 }
 
 /**
@@ -130,14 +134,12 @@ class FormFiller {
         }
 
         // LinkedIn-specific: Handle validation errors after initial fill
-        if (window.location.hostname.includes('linkedin.com')) {
+        if (_isLinkedIn) {
           await this.handleLinkedInValidationErrors();
         }
       } else {
         // SEQUENTIAL MODE: One LLM call per field (more accurate)
-        const delayMessage = isWorkdayDomain()
-          ? " with delays for Workday detection evasion"
-          : "";
+        const delayMessage = _isWorkday ? " with delays for Workday detection evasion" : "";
         printLog(`Using SEQUENTIAL mode (more accurate)${delayMessage}`);
 
         for (const formElement of formElements) {
@@ -150,7 +152,7 @@ class FormFiller {
         }
 
         // LinkedIn-specific: Handle validation errors after initial fill
-        if (window.location.hostname.includes('linkedin.com')) {
+        if (_isLinkedIn) {
           await this.handleLinkedInValidationErrors();
         }
       }
@@ -388,11 +390,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       // Skip hidden elements (CSS hidden or HTML hidden attribute)
       // BUT: Skip these checks for spl-* elements (custom components may have non-standard styling)
       if (!isSplElement) {
+        const cs = getComputedStyle(input);
         if (input.hidden ||
           input.getAttribute('hidden') !== null ||
           (input.getAttribute('aria-hidden') === 'true' && !isListbox && input.tagName.toLowerCase() !== 'ui5-date-picker-xweb-calendar-widget') ||
-          getComputedStyle(input).display === 'none' ||
-          getComputedStyle(input).visibility === 'hidden') {
+          cs.display === 'none' ||
+          cs.visibility === 'hidden') {
           return;
         }
       } else {
@@ -593,7 +596,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     }
 
     // Skip hidden via CSS
-    if (input.hidden || getComputedStyle(input).display === 'none' || getComputedStyle(input).visibility === 'hidden') {
+    const cs = getComputedStyle(input);
+    if (input.hidden || cs.display === 'none' || cs.visibility === 'hidden') {
       return true;
     }
 
