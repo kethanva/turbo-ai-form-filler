@@ -4,6 +4,15 @@ dist/
 .DS_Store
 CHROME_DATA/
 
-# Secrets - DO NOT COMMIT
+# Secrets and personal data - DO NOT COMMIT
 config/secrets.json
 config/personals.json
+
+# Build artifacts
+*.zip
+release/
+
+# Editor / local tooling
+.vscode/
+.idea/
+.claude/

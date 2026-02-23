@@ -1,189 +1,204 @@
-# Auto Form Filler Chrome Extension
+# Auto Form Filler
 
-A Chrome extension that automatically fills HTML form elements using AI-powered responses. The extension supports all standard HTML form elements including text inputs, checkboxes, radio buttons, dropdowns, and HTML5 input types.
+> AI-powered Chrome extension that automatically fills job application forms — press one shortcut and watch it go.
 
-## Features
+[![CI](https://github.com/YOUR_USERNAME/auto-form-filler/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/auto-form-filler/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue)](manifest.json)
 
-- 🤖 **AI-Powered Form Filling**: Uses LLM (Groq, HuggingFace) to intelligently answer form questions
-- 🔄 **Multiple LLM Providers**: Supports Groq (primary) and HuggingFace (fallback) with automatic failover
-- 🎯 **Fuzzy Logic Fallback**: Uses fuzzy matching when LLM APIs are unavailable
-- 📝 **Comprehensive Form Support**: Handles all HTML form elements:
-  - Text inputs (text, email, url, search, tel, number)
-  - Date/time inputs (date, time, datetime-local, month, week)
-  - Range sliders
-  - Color pickers
-  - Checkboxes and radio buttons
-  - Dropdowns (single and multiple select)
-  - Textareas
-- ⚙️ **Configurable**: Easy-to-use settings page for API keys and preferences
-- 🎨 **User-Friendly UI**: Simple popup interface with status indicators
+---
+
+## What it does
+
+Open any job application page, press **⌘⇧F** (Mac) / **Ctrl+Shift+F** (Windows), and the extension:
+
+1. Finds every form field on the page
+2. Reads the label / question for each field
+3. Asks an LLM to produce the best answer from your profile
+4. Fills in the value and fires the right DOM events so the site accepts it
+
+No copy-pasting. No re-typing the same things for every company.
+
+---
+
+## Supported platforms
+
+| Platform | Status |
+|---|---|
+| LinkedIn Easy Apply | ✅ |
+| Workday | ✅ |
+| Greenhouse | ✅ |
+| Lever | ✅ |
+| Ashby | ✅ |
+| iCIMS | ✅ |
+| Clinch Talent (Roku Jobs, etc.) | ✅ |
+| SAP SuccessFactors | ✅ |
+| Freshteam / Freshworks | ✅ |
+| GEM ATS | ✅ |
+| Generic HTML forms | ✅ |
+
+---
 
 ## Installation
 
-### Prerequisites
+### Option A — Download the latest release *(easiest)*
 
-- Node.js and npm installed
-- Chrome browser
+1. Go to [Releases](../../releases) and download **release.zip**.
+2. Unzip it.
+3. Open `chrome://extensions` in Chrome.
+4. Enable **Developer mode** (toggle, top-right).
+5. Click **Load unpacked** and select the unzipped folder.
 
-### Quick Start (Automated)
-
-**Option 1: Use the run script (Recommended)**
-
-Simply run the provided script to automatically build and launch Chrome with the extension:
+### Option B — Build from source
 
 ```bash
-cd extension
-./run.sh
+git clone https://github.com/YOUR_USERNAME/auto-form-filler.git
+cd auto-form-filler
+npm install
+npm run build
 ```
 
-This will:
-- Build the extension if needed
-- Create a Chrome profile in `./CHROME_DATA`
-- Launch Chrome with the extension automatically loaded and enabled
+Then load the folder in Chrome (same steps 3–5 above).
 
-**For Windows:**
-```cmd
-cd extension
-run.bat
+---
+
+## Setup (required after install)
+
+### 1 — Add your API key
+
+Click the extension icon → **Settings** → **API Keys** tab.
+
+| Provider | Cost | Where to get it |
+|---|---|---|
+| **Groq** (recommended) | Free tier, very fast | https://console.groq.com/keys |
+| HuggingFace | Free | https://huggingface.co/settings/tokens |
+
+You only need one. Groq's free tier is generous enough for daily job searching.
+
+### 2 — Fill in your profile
+
+Settings → **Profile** tab. Paste your details as JSON — name, email, phone, experience, skills, education. Use the example below as a starting point (also available as `config/personals.example.json`):
+
+```jsonc
+{
+  "first_name": "Jane",
+  "last_name": "Doe",
+  "email": "jane@example.com",
+  "phone": "5551234567",
+  "linkedin": "https://linkedin.com/in/janedoe",
+  "github": "https://github.com/janedoe",
+  "years_of_experience": 5,
+  "skills": ["TypeScript", "React", "Node.js"],
+  "require_visa_sponsorship": false,
+  "experience_details": [
+    {
+      "title": "Senior Software Engineer",
+      "companyKey": "acme",
+      "from": "2021-03",
+      "to": "Present",
+      "highlights": ["Built X that improved Y by Z%"]
+    }
+  ]
+}
 ```
 
-### Manual Installation
+Click **Save** and you're done.
 
-1. **Install dependencies:**
-   ```bash
-   cd extension
-   npm install
-   ```
-
-2. **Build TypeScript:**
-   ```bash
-   npm run build
-   ```
-
-3. **Load extension in Chrome:**
-   - Open Chrome and navigate to `chrome://extensions/`
-   - Enable "Developer mode" (toggle in top right)
-   - Click "Load unpacked"
-   - Select the `extension` folder
-
-## Configuration
-
-### Setting Up API Keys
-
-1. Click the extension icon in Chrome
-2. Click "Settings"
-3. Configure your API keys:
-
-   **Groq (Primary - Recommended):**
-   - Get API key from: https://console.groq.com/keys
-   - Enter your API key in the Groq API Key field
-   - Default model: `llama-3.1-8b-instant`
-
-   **HuggingFace (Fallback - FREE):**
-   - Get FREE token from: https://huggingface.co/settings/tokens
-   - Enter your token in the HuggingFace API Key field
-   - Default model: `meta-llama/Llama-3.2-3B-Instruct`
-
-4. Click "Save Settings"
-
-### Personal Information Configuration
-
-Edit `src/config/personals.ts` to customize your personal information, experience, skills, and other details that will be used to answer form questions.
+---
 
 ## Usage
 
-1. Navigate to any webpage with forms
-2. Click the extension icon
-3. Click "Start Filling Forms"
-4. The extension will automatically:
-   - Detect all form elements on the page
-   - Extract questions from labels and placeholders
-   - Use AI to generate appropriate answers
-   - Fill in the form fields
+| Action | How |
+|---|---|
+| Fill current page | Click extension icon → **Start Filling Forms** |
+| Keyboard shortcut | **⌘⇧F** on Mac, **Ctrl+Shift+F** on Windows/Linux |
 
-## How It Works
+The status indicator in the popup shows **Ready** → **Filling…** → count of filled fields.
 
-1. **Form Detection**: Scans the page for all input, textarea, and select elements
-2. **Question Extraction**: Identifies questions from:
-   - Associated labels
-   - Placeholder text
-   - Aria labels
-   - Nearby text
-3. **Answer Generation**: 
-   - Primary: Uses Groq LLM API
-   - Fallback 1: Uses HuggingFace LLM API
-   - Fallback 2: Uses fuzzy matching against personal config
-4. **Form Filling**: Sets values and triggers appropriate events
+---
+
+## How it works
+
+```
+Page loaded
+    │
+    ▼
+Scan DOM for inputs, selects, textareas, custom components
+    │
+    ▼
+Extract label text (handles aria-labelledby, label[for], parent label,
+                    fieldset legend, sibling text, placeholder, …)
+    │
+    ▼
+Batch-send all questions + your profile to LLM (Groq / HuggingFace)
+    │
+    ├─ LLM returns answers
+    │
+    └─ Fallback: fuzzy-match against your profile if API is down
+    │
+    ▼
+Fill each field + dispatch input/change events so frameworks detect the change
+```
+
+---
 
 ## Development
 
-### Project Structure
-
 ```
-extension/
-├── src/
-│   ├── config/
-│   │   ├── personals.ts      # Personal information config
-│   │   ├── questions.ts      # AI prompts
-│   │   └── secrets.ts        # API keys management
-│   ├── modules/
-│   │   ├── ai/
-│   │   │   ├── groqConnections.ts
-│   │   │   ├── huggingfaceConnections.ts
-│   │   │   └── llm_manager.ts
-│   │   ├── fuzzy_matcher.ts
-│   │   └── helpers.ts
-│   ├── content.ts            # Content script (form filling logic)
-│   ├── popup.ts              # Popup UI script
-│   ├── background.ts         # Background service worker
-│   └── options.ts            # Settings page script
-├── dist/                     # Compiled JavaScript (generated)
-├── icons/                    # Extension icons
-├── manifest.json
-├── popup.html
-├── options.html
-├── tsconfig.json
-└── package.json
+src/
+├── content.ts           # Main form-filling logic (injected into every page)
+├── background.ts        # Service worker (keyboard shortcut handler)
+├── popup.ts             # Popup UI
+├── options.ts           # Settings page
+└── modules/
+    ├── ai/
+    │   ├── groqConnections.ts
+    │   ├── huggingfaceConnections.ts
+    │   └── llm_manager.ts       # Provider selection + retry logic
+    ├── config_loader.ts         # Loads profile/secrets from Chrome storage
+    ├── fuzzy_matcher.ts         # Offline fallback
+    └── helpers.ts
 ```
 
-### Build Commands
+### Commands
 
-- `npm run build` - Compile TypeScript to JavaScript
-- `npm run watch` - Watch mode for development
-- `npm run clean` - Remove dist folder
+```bash
+npm run build    # TypeScript compile + esbuild bundle
+npm run watch    # Watch mode (recompiles on save)
+npm run clean    # Delete dist/
+npm run package  # Build → create release.zip for Chrome Web Store
+```
 
-### TypeScript Configuration
+### Creating a release
 
-The project uses TypeScript with strict mode enabled. Source files are in `src/` and compiled to `dist/`.
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+# GitHub Actions builds and attaches release.zip automatically
+```
 
-## Troubleshooting
-
-### Extension not filling forms
-
-1. Check that API keys are configured in Settings
-2. Open browser console (F12) to see error messages
-3. Verify that the page has form elements
-4. Check that the extension has permission to access the page
-
-### API Errors
-
-- **401 Unauthorized**: Check your API keys
-- **429 Rate Limit**: Wait a few minutes and try again
-- **503 Service Unavailable**: The LLM service is temporarily down, fuzzy logic will be used
-
-### Forms not detected
-
-Some websites use custom form implementations. The extension works best with standard HTML form elements. For custom implementations, you may need to modify the form detection logic in `content.ts`.
-
-## License
-
-MIT License
+---
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Pull requests are welcome. For major changes please open an issue first to discuss what you'd like to change.
 
-## Support
+1. Fork the repo
+2. Create a feature branch: `git checkout -b feat/my-feature`
+3. Commit your changes: `git commit -m 'feat: add support for XYZ ATS'`
+4. Push and open a PR
 
-For issues and questions, please open an issue on the repository.
+---
 
+## Privacy
+
+- Your profile data is stored locally in Chrome's `storage.sync`.
+- API keys are stored locally in Chrome's `storage.sync`.
+- Form field questions are sent to the Groq / HuggingFace API to generate answers. No other data leaves your browser.
+- The extension does not collect analytics, crash reports, or any usage data.
+
+---
+
+## License
+
+[MIT](LICENSE)

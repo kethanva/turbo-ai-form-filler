@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Auto Form Filler",
   "version": "1.0.0",
-  "description": "Automatically fills HTML form elements using AI-powered responses",
+  "description": "AI-powered form filler for job applications. Works on LinkedIn, Workday, Greenhouse, Lever, Ashby and more.",
   "permissions": [
     "activeTab",
     "storage",
