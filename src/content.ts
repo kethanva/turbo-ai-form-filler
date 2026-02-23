@@ -500,7 +500,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       wrappers.forEach(wrapper => {
         // Find label within wrapper
         const labelEl = wrapper.querySelector(pattern.label);
-        const labelText = labelEl?.textContent?.trim() || '';
+        const labelText = labelEl ? this.getCleanLabelText(labelEl) : '';
 
         // Find input control within wrapper
         const controlEl = wrapper.querySelector(pattern.control) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
@@ -629,6 +629,17 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     return false;
   }
 
+  /**
+   * Returns the visible label text from an element, stripping known noise injected by some ATS platforms.
+   * For example, Clinch Talent appends <span class="ada-unique-content">hex-hash</span> to every label,
+   * which causes the LLM to echo the hash back as an answer.
+   */
+  private getCleanLabelText(element: Element): string {
+    const clone = element.cloneNode(true) as Element;
+    clone.querySelectorAll('.ada-unique-content').forEach(el => el.remove());
+    return clone.textContent?.trim() || '';
+  }
+
   private extractQuestion(element: HTMLElement): string {
     // Try to find associated label
     let question = '';
@@ -666,7 +677,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         for (const id of labelIds) {
           const labelElement = document.getElementById(id);
           if (labelElement) {
-            const labelText = labelElement.textContent?.trim() || '';
+            const labelText = this.getCleanLabelText(labelElement);
             // Skip placeholder labels like "Select..."
             if (labelText && !labelText.toLowerCase().includes('select...') && labelText.length > 3) {
               question = labelText;
@@ -681,7 +692,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     if (!question && element.id) {
       const label = document.querySelector(`label[for="${element.id}"]`);
       if (label) {
-        question = label.textContent?.trim() || '';
+        question = this.getCleanLabelText(label);
       }
     }
 
@@ -689,7 +700,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     if (!question) {
       const parentLabel = element.closest('label');
       if (parentLabel) {
-        question = parentLabel.textContent?.trim() || '';
+        question = this.getCleanLabelText(parentLabel);
       }
     }
 
@@ -699,7 +710,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       if (fieldset) {
         const legend = fieldset.querySelector('legend');
         if (legend) {
-          question = legend.textContent?.trim() || '';
+          question = this.getCleanLabelText(legend);
         }
       }
     }
@@ -719,7 +730,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           while (sibling) {
             const tag = sibling.tagName;
             if (tag === 'SPAN' || tag === 'LABEL' || tag === 'DIV') {
-              const text = sibling.textContent?.trim();
+              const text = this.getCleanLabelText(sibling);
               // Heuristic: Label shouldn't be too long, must have some text
               if (text && text.length > 2 && text.length < 100) {
                 // Avoid irrelevant siblings
@@ -762,7 +773,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           (prev.textContent || '').trim().length === 0;
 
         if (!isIgnored) {
-          question = prev.textContent?.trim() || '';
+          question = this.getCleanLabelText(prev);
           // printLog(`Found label via previous sibling ${prev.tagName}: ${question}`);
         }
       }
@@ -783,7 +794,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         const potentialLabel = formGroupWrapper.querySelector('.application-label, .label, .field-label, label, .text, th');
         if (potentialLabel) {
           // Ensure this label isn't for another input (basic check)
-          question = potentialLabel.textContent?.trim() || '';
+          question = this.getCleanLabelText(potentialLabel);
         }
       }
 
@@ -794,7 +805,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           // Check previous sibling of parent (often the label container)
           const prevSibling = parent.previousElementSibling;
           if (prevSibling && (prevSibling.className.includes('label') || prevSibling.className.includes('text'))) {
-            question = prevSibling.textContent?.trim() || '';
+            question = this.getCleanLabelText(prevSibling);
           }
         }
       }
@@ -888,7 +899,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           if (labelId) {
             const labelElement = document.getElementById(labelId);
             if (labelElement) {
-              const labelText = labelElement.textContent?.trim() || '';
+              const labelText = this.getCleanLabelText(labelElement);
               const workdayMatch = labelText.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
               if (workdayMatch) {
                 rowText = labelText;
@@ -1180,13 +1191,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     if (element.id) {
       const label = document.querySelector(`label[for="${element.id}"]`);
       if (label) {
-        return label.textContent?.trim() || null;
+        return this.getCleanLabelText(label) || null;
       }
     }
 
     const parent = element.parentElement;
     if (parent && parent.tagName.toLowerCase() === 'label') {
-      return parent.textContent?.trim() || null;
+      return this.getCleanLabelText(parent) || null;
     }
 
     return null;
