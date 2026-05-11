@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify dist files exist
+        run: |
+          test -f dist/content.bundle.js  || (echo "Missing content.bundle.js"  && exit 1)
+          test -f dist/popup.bundle.js    || (echo "Missing popup.bundle.js"    && exit 1)
+          test -f dist/options.bundle.js  || (echo "Missing options.bundle.js"  && exit 1)
+          test -f dist/background.js      || (echo "Missing background.js"      && exit 1)
+          echo "✅ All dist files present"
