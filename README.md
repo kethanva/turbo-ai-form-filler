@@ -71,7 +71,31 @@ Click the extension icon → **Settings** → **API Keys**.
 - **HuggingFace**: [Get a key here](https://huggingface.co/settings/tokens). Also free for most inference tasks.
 
 ### 2. Personalize Your Profile
-Settings → **Profile**. Paste your details as JSON. You can find a template in `config/personals.example.json`.
+Click the extension icon → **Settings** → **Profile** tab. 
+
+Paste your details as JSON. The extension uses this structured data to answer form questions accurately. Use this template as a starting point:
+
+```json
+{
+  "first_name": "Jane",
+  "last_name": "Doe",
+  "email": "jane.doe@example.com",
+  "phone": "1234567890",
+  "years_of_experience": 5,
+  "skills": ["TypeScript", "React", "Node.js"],
+  "experience_details": [
+    {
+      "companyKey": "acme_inc",
+      "title": "Senior Engineer",
+      "from": "2020-01",
+      "to": "Present"
+    }
+  ]
+}
+```
+
+> [!TIP]
+> You can find a full, detailed template in [config/personals.example.json](config/personals.example.json). For best results, include your education and specific role highlights.
 
 ---
 

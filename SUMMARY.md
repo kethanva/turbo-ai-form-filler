@@ -12,23 +12,24 @@ This Chrome extension automatically fills HTML form elements using AI-powered re
 - ✅ Build system (`package.json` with npm scripts)
 - ✅ Extension icons (16px, 48px, 128px)
 
-### 2. Configuration Files (Converted from Python)
-- ✅ `src/config/personals.ts` - Personal information and preferences
-- ✅ `src/config/questions.ts` - AI prompts for question answering
-- ✅ `src/config/secrets.ts` - API key management with Chrome storage
+### 2. Configuration & Prompts
+- ✅ `config/personals.example.json` - Template for personal information
+- ✅ `config/questions.json` - Master AI prompt rules and date logic
+- ✅ `config/secrets.example.json` - Template for API key configuration
 
-### 3. Core Modules (Converted from Python)
-- ✅ `src/modules/ai/groqConnections.ts` - Groq LLM integration
-- ✅ `src/modules/ai/huggingfaceConnections.ts` - HuggingFace LLM integration
-- ✅ `src/modules/ai/llm_manager.ts` - LLM manager with failover logic
-- ✅ `src/modules/fuzzy_matcher.ts` - Fuzzy matching fallback
-- ✅ `src/modules/helpers.ts` - Utility functions
+### 3. Core Modules (TypeScript)
+- ✅ `src/modules/ai/llm_manager.ts` - Provider selection, failover, and prompt orchestration
+- ✅ `src/modules/ai/groqConnections.ts` - Groq LPU integration
+- ✅ `src/modules/ai/huggingfaceConnections.ts` - HuggingFace fallback integration
+- ✅ `src/modules/fuzzy_matcher.ts` - Local offline matching fallback
+- ✅ `src/modules/config_loader.ts` - Unified loader for user profile and secrets
+- ✅ `src/modules/helpers.ts` - DOM event simulation and utility functions
 
-### 4. Extension Scripts
-- ✅ `src/content.ts` - Content script for form detection and filling
-- ✅ `src/popup.ts` - Popup UI script
-- ✅ `src/background.ts` - Background service worker
-- ✅ `src/options.ts` - Settings page script
+### 4. Extension Entry Points
+- ✅ `src/content.ts` - Main content script (Form detection, extraction, and injection)
+- ✅ `src/popup.ts` - Popup UI logic and filling status
+- ✅ `src/background.ts` - Service worker for keyboard shortcuts (⌘⇧F)
+- ✅ `src/options.ts` - Settings dashboard for Profile and API Keys
 
 ### 5. UI Files
 - ✅ `popup.html` - Extension popup interface
