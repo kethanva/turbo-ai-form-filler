@@ -1,4 +1,4 @@
-# Chrome Extension : form-autopilot
+# Chrome Extension : turbo-ai-form-filler
 
 ## Project Summary
 

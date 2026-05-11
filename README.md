@@ -1,10 +1,10 @@
-# form-autopilot
+# turbo-ai-form-filler
 
-![form-autopilot Banner](docs/banner.png)
+![turbo-ai-form-filler Banner](docs/banner.png)
 
 > **AI-powered Chrome extension that eliminates the manual effort of filling job application forms — press one shortcut and let the AI handle the rest.**
 
-[![CI](https://github.com/YOUR_USERNAME/form-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/form-autopilot/actions/workflows/ci.yml)
+[![CI](https://github.com/kethanva/turbo-ai-form-filler/actions/workflows/ci.yml/badge.svg)](https://github.com/kethanva/turbo-ai-form-filler/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue)](manifest.json)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -15,7 +15,7 @@
 
 Active job seekers routinely apply to **50–100+ positions per month**. Every application asks the same information — work history, education, skills, salary expectations, notice period — but spread across a dozen different ATS platforms, each with their own layout. The result is hours of repetitive, low-value data entry that delays applications and causes burnout.
 
-**form-autopilot** solves this by:
+**turbo-ai-form-filler** solves this by:
 - Storing your professional profile once in a structured JSON format.
 - Intelligently mapping your profile to any form field using an LLM, regardless of how the question is phrased.
 - Filling the entire form in seconds, so you can focus on personalizing your cover letter and preparing for interviews — the parts that actually matter.
@@ -92,8 +92,8 @@ Popup shows filled count. Review, adjust if needed, and submit.
 ### Option 1: Run the Setup Script (Recommended)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/form-autopilot.git
-cd form-autopilot
+git clone https://github.com/kethanva/turbo-ai-form-filler.git
+cd turbo-ai-form-filler
 ./setup.sh        # macOS / Linux
 # setup.bat       # Windows
 ```
@@ -101,7 +101,7 @@ cd form-autopilot
 This handles everything: creates your local config files, installs dependencies, and builds the extension. Then load it in Chrome:
 - Open `chrome://extensions`
 - Enable **Developer mode** (top-right toggle)
-- Click **Load unpacked** → select the `form-autopilot` folder
+- Click **Load unpacked** → select the `turbo-ai-form-filler` folder
 
 ### Option 2: Download a Release
 

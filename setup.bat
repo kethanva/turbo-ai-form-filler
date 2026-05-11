@@ -1,10 +1,10 @@
 @echo off
-REM setup.bat — First-time setup script for form-autopilot (Windows)
+REM setup.bat — First-time setup script for turbo-ai-form-filler (Windows)
 REM Run this once after cloning the repository.
 
 echo.
 echo ============================================
-echo   form-autopilot — First-Time Setup
+echo   turbo-ai-form-filler — First-Time Setup
 echo ============================================
 echo.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh — First-time setup script for form-autopilot
+# setup.sh — First-time setup script for turbo-ai-form-filler
 # Run this once after cloning the repository.
 
 set -e
@@ -9,7 +9,7 @@ CONFIG_DIR="$SCRIPT_DIR/config"
 
 echo ""
 echo "============================================"
-echo "  form-autopilot — First-Time Setup"
+echo "  turbo-ai-form-filler — First-Time Setup"
 echo "============================================"
 echo ""
 

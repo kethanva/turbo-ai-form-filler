@@ -17,7 +17,7 @@ paste logs here
 ```
 
 ## Extension version
-<!-- Found in chrome://extensions next to form-autopilot -->
+<!-- Found in chrome://extensions next to turbo-ai-form-filler -->
 
 ## Chrome version
 <!-- Found at chrome://version -->
