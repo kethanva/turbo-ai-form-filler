@@ -44,22 +44,22 @@
 
 ## 🚀 Installation
 
-### Option 1: Download Release (Recommended)
-
-1. Go to [Releases](../../releases) and download `release.zip`.
-2. Unzip the archive.
-3. Open `chrome://extensions` in your browser.
-4. Enable **Developer mode** (top-right).
-5. Click **Load unpacked** and select the unzipped folder.
-
-### Option 2: Build from Source
+### Option 1: Run Setup Script (Fastest — Recommended)
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/form-autopilot.git
 cd form-autopilot
-npm install
-npm run build
+./setup.sh        # macOS/Linux
+# or: setup.bat  # Windows
 ```
+
+This handles everything: config files, `npm install`, and `npm run build`. Then load the folder in Chrome as an unpacked extension (`chrome://extensions` → Developer mode → Load unpacked).
+
+### Option 2: Download Release
+
+1. Go to [Releases](../../releases) and download `release.zip`.
+2. Unzip the archive.
+3. Open `chrome://extensions` → Enable **Developer mode** → Click **Load unpacked**.
 
 ---
 
