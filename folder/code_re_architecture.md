@@ -83,7 +83,7 @@ extension/
 
 **After:** Dynamic injection using the already-computed `experienceData` / `educationData` derived from `personalsData.experience_details` and `personalsData.education_details`. Instruction block simplified to a generic 0-based indexing rule with a short example and an "N/A if missing" fallback.
 
-**Verification:** Grep for the previously hardcoded strings in `dist/content.bundle.js` returns `0`.
+**Verification:** Grep for previous employer strings in `dist/content.bundle.js` returns `0`.
 
 ---
 
