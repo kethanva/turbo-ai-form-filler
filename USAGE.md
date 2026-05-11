@@ -37,20 +37,21 @@ This script will:
    - Click "Load unpacked"
    - Select the `extension` folder
 
-## First Time Setup
+## First-Time Setup
 
-1. **Configure API Keys:**
-   - Click the extension icon in Chrome
-   - Click "Settings"
-   - Enter your API keys:
-     - **Groq API Key**: Get from https://console.groq.com/keys
-     - **HuggingFace Token**: Get FREE token from https://huggingface.co/settings/tokens
-   - Click "Save Settings"
+### 1. Configure API Keys
+Click the extension icon → **Settings** → **API Keys**.
+- **Groq API Key**: [console.groq.com/keys](https://console.groq.com/keys) — Free tier, very fast.
+- **HuggingFace Token**: [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) — Also free.
 
-2. **Customize Personal Info:**
-   - Click the extension icon → **Settings** → **Profile**.
-   - Paste your details as JSON.
-   - Use [config/personals.example.json](config/personals.example.json) as a guide for the required format.
+You only need one. Groq is recommended for its speed during an active job search.
+
+### 2. Build Your Profile
+Click the extension icon → **Settings** → **Profile**.
+- Use [config/personals.example.json](config/personals.example.json) as a starting template.
+- Fill in your contact info, work history (`experience_details`), education, skills, salary expectations, and notice period.
+- The richer your profile, the more accurately the LLM can answer open-ended questions.
+- Click **Save Settings** when done. Changes apply immediately on the next form fill.
 
 ## Using the Extension
 
