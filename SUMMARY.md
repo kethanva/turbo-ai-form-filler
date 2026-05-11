@@ -1,4 +1,4 @@
-# Chrome Extension - Auto Form Filler
+# Chrome Extension - FormAutoPilot
 
 ## Project Summary
 

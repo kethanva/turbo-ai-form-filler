@@ -1,9 +1,9 @@
 @echo off
-REM Windows batch script to launch Chrome with the Auto Form Filler extension
+REM Windows batch script to launch Chrome with the FormAutoPilot extension
 
 setlocal enabledelayedexpansion
 
-echo 🚀 Auto Form Filler - Chrome Launcher
+echo 🚀 FormAutoPilot - Chrome Launcher
 echo.
 
 REM Get the directory where this script is located
@@ -65,7 +65,7 @@ echo 📦 Extension directory: %EXTENSION_DIR%
 echo.
 
 REM Launch Chrome with extension
-echo 🚀 Launching Chrome with Auto Form Filler extension...
+echo 🚀 Launching Chrome with FormAutoPilot extension...
 echo.
 
 start "" "!CHROME_EXEC!" ^

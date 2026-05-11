@@ -1,6 +1,6 @@
-# Contributing to Auto Form Filler
+# Contributing to FormAutoPilot
 
-First off, thank you for considering contributing to Auto Form Filler! It's people like you that make this tool better for everyone.
+First off, thank you for considering contributing to FormAutoPilot! It's people like you that make this tool better for everyone.
 
 ## Code of Conduct
 
@@ -33,8 +33,8 @@ By participating in this project, you are expected to uphold our Code of Conduct
 ## Development Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/auto-form-filler.git
-cd auto-form-filler
+git clone https://github.com/YOUR_USERNAME/form-autopilot.git
+cd form-autopilot
 npm install
 npm run build
 ```

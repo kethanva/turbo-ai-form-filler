@@ -17,7 +17,7 @@ paste logs here
 ```
 
 ## Extension version
-<!-- Found in chrome://extensions next to Auto Form Filler -->
+<!-- Found in chrome://extensions next to FormAutoPilot -->
 
 ## Chrome version
 <!-- Found at chrome://version -->

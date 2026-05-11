@@ -14,7 +14,7 @@
    - The extension should now appear
 
 2. **Check if Extension is Loaded:**
-   - Look for "Auto Form Filler" in the extensions list
+   - Look for "FormAutoPilot" in the extensions list
    - It might appear as "Unpacked" - this is normal
    - Click the toggle switch to enable it
 
@@ -45,7 +45,7 @@
 
 1. **Enable the Extension:**
    - Go to `chrome://extensions/`
-   - Find "Auto Form Filler"
+   - Find "FormAutoPilot"
    - Toggle the switch to enable it
 
 2. **Check for Errors:**
@@ -72,7 +72,7 @@
 
 3. **Verify Content Script:**
    - Go to `chrome://extensions/`
-   - Find "Auto Form Filler"
+   - Find "FormAutoPilot"
    - Click "Details"
    - Verify "Injected scripts" shows the content script
 
@@ -137,7 +137,7 @@
 3. **Pin the Extension:**
    - Go to `chrome://extensions/`
    - Click the puzzle piece icon in Chrome toolbar
-   - Find "Auto Form Filler"
+   - Find "FormAutoPilot"
    - Click the pin icon to pin it to toolbar
 
 ## Manual Loading (Alternative Method)
@@ -163,7 +163,7 @@ If the script doesn't work, you can manually load the extension:
    - Click "Select"
 
 5. **Enable Extension:**
-   - Toggle the switch to enable "Auto Form Filler"
+   - Toggle the switch to enable "FormAutoPilot"
 
 ## Verification Checklist
 

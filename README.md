@@ -1,10 +1,10 @@
-# Auto Form Filler
+# FormAutoPilot
 
-![Auto Form Filler Banner](docs/banner.png)
+![FormAutoPilot Banner](docs/banner.png)
 
 > **AI-powered Chrome extension that automatically fills job application forms — press one shortcut and watch it go.**
 
-[![CI](https://github.com/YOUR_USERNAME/auto-form-filler/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/auto-form-filler/actions/workflows/ci.yml)
+[![CI](https://github.com/YOUR_USERNAME/form-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/form-autopilot/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue)](manifest.json)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -55,8 +55,8 @@
 ### Option 2: Build from Source
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/auto-form-filler.git
-cd auto-form-filler
+git clone https://github.com/YOUR_USERNAME/form-autopilot.git
+cd form-autopilot
 npm install
 npm run build
 ```
