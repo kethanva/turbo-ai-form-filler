@@ -49,13 +49,12 @@
 
 ## Customizing Personal Information
 
-Edit `src/config/personals.ts` to update your personal information, experience, skills, etc. After making changes:
+You do **not** need to edit the source code to update your profile. 
 
-```bash
-npm run build
-```
-
-Then reload the extension in Chrome (click the reload button on `chrome://extensions/`).
+1. Click the extension icon.
+2. Click **Settings** → **Profile** tab.
+3. Paste your profile as JSON (use `config/personals.example.json` as a template).
+4. Click **Save Settings**.
 
 ## Troubleshooting
 

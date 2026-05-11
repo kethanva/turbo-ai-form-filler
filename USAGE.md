@@ -47,10 +47,10 @@ This script will:
      - **HuggingFace Token**: Get FREE token from https://huggingface.co/settings/tokens
    - Click "Save Settings"
 
-2. **Customize Personal Info (Optional):**
-   - Edit `src/config/personals.ts`
-   - Rebuild: `npm run build`
-   - Reload extension in Chrome
+2. **Customize Personal Info:**
+   - Click the extension icon → **Settings** → **Profile**.
+   - Paste your details as JSON.
+   - Use [config/personals.example.json](config/personals.example.json) as a guide for the required format.
 
 ## Using the Extension
 
