@@ -104,14 +104,11 @@ ${experienceData}
 ${educationData}
 
 **CRITICAL INDEXING INSTRUCTIONS:**
-- When you see [Entry: 1] -> use experience_details[0] or education_details[0] (ARRAY INDEX = Entry Number - 1)
-- When you see [Entry: 2] -> use experience_details[1] or education_details[1]
-- When you see [Entry: 3] -> use experience_details[2] or education_details[2]
-- EXAMPLE: "Company [Entry: 2]" = experience_details[1].company = "BMC Netreo"
-- EXAMPLE: "School [Entry: 2]" = education_details[1].school = "K.S.I.T (V.T.U), Bangalore"
-
-DO NOT use the first entry if the question asks for Entry 2, 3, etc.
-DO NOT return "N/A" if data exists in the array at that index.
+- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
+- "Company [Entry: 2]" -> experience_details[1].companyKey
+- "School [Entry: 2]" -> education_details[1].institution
+- DO NOT use the first entry if the question asks for Entry 2, 3, etc.
+- If the requested index does not exist in the array, return "N/A".
 
 === General Context ===
 ${JSON.stringify(personalsData)}
@@ -164,8 +161,14 @@ ${JSON.stringify(personalsData)}
         // Validate answer
         printLog(`🔍 LLM Provider ${provider} raw answer: [${answer}] (type: ${typeof answer})`);
         if (answer && typeof answer === 'string' && answer.trim().length > 0) {
-          if (answer.toLowerCase().startsWith('error') || answer.includes('Error:')) {
-            printLog(`LLM Provider ${provider} returned error message: ${answer}`);
+          // Only treat as an error if the whole reply is a short error sentence.
+          // Long answers that merely mention "error" are valid content.
+          const trimmed = answer.trim();
+          const looksLikeApiError =
+            trimmed.length < 200 &&
+            /^(error|api error|failed|exception)\b[:\s]/i.test(trimmed);
+          if (looksLikeApiError) {
+            printLog(`LLM Provider ${provider} returned error message: ${trimmed}`);
             continue;
           }
 
@@ -228,6 +231,16 @@ ${JSON.stringify(personalsData)}
     const results = new Map<string, string>();
 
     if (questionsList.length === 0) return results;
+
+    // Honor cooldown — don't hammer APIs that just failed.
+    if (this.cooldownEndTime && new Date() < this.cooldownEndTime) {
+      printLog(`Batch skipped: LLM cooldown active until ${this.cooldownEndTime}`);
+      return results;
+    }
+    if (this.cooldownEndTime && new Date() >= this.cooldownEndTime) {
+      this.cooldownEndTime = null;
+      this.currentFallbackIndex = 0;
+    }
 
     // Build a combined prompt for all questions
     const personalsData = getPersonalsSync() || await loadPersonals();
@@ -304,43 +317,40 @@ JavaScript arrays start at index 0. To find the correct entry:
 
 7. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
 
-8. **IF [Entry: X] is missing**: Return "N/A"
+8. **VISA / SPONSORSHIP FIELDS**:
+   - If question asks about requiring Visa Sponsorship now or in future -> Answer based on user info (e.g., "No" if sponsorship_required is false)
+   - If question asks about Work Authorization -> Answer "Yes" if authorized
+
+9. **DEMOGRAPHIC FIELDS (RACE, GENDER, VETERAN, DISABILITY)**:
+   - Extract explicitly from user info (e.g. "gender", "veteran_status").
+   - If the exact race is not in the JSON but nationality is (e.g. "citizen_of_india": true), you can infer race (e.g., "Asian").
+   - If disability status is false, select the option indicating no disability.
+   - If information is completely missing and cannot be inferred, answer "Decline To Self Identify" or "I do not wish to answer" instead of "N/A".
+
+10. **IF [Entry: X] is missing**: Return "N/A"
 
 === General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
 `;
 
-    // If we have Entry-based questions, inject structured arrays
-    // This block is now always included as per the HEAD version logic
+    // Inject the USER'S actual structured data (from their profile) for [Entry: X] questions.
+    // Never hardcode — the earlier experienceData / educationData come straight from personalsData.
     batchPrompt += `
 
 === STRUCTURED DATA FOR REPEATING SECTIONS ===
 
 **EXPERIENCE_DETAILS** (use for Work Experience questions):
-[
-  {"entry": 1, "company": "UHG Optum Labs", "title": "Principal Engineer", "location": "Bangalore, India", "start_date": "02/2022", "end_date": "Present", "currently_work_here": true},
-  {"entry": 2, "company": "BMC Netreo", "title": "Cloud Lead", "location": "Remote, USA", "start_date": "06/2019", "end_date": "01/2022", "currently_work_here": false},
-  {"entry": 3, "company": "VMware", "title": "Senior Member of Technical Staff", "location": "Bangalore, India", "start_date": "06/2013", "end_date": "05/2019", "currently_work_here": false},
-  {"entry": 4, "company": "CGI", "title": "Senior Software Engineer", "location": "Bangalore, India", "start_date": "08/2012", "end_date": "05/2013", "currently_work_here": false},
-  {"entry": 5, "company": "Tavant", "title": "Software Engineer", "location": "Bangalore, India", "start_date": "06/2011", "end_date": "07/2012", "currently_work_here": false},
-  {"entry": 6, "company": "Mphasis", "title": "Software Engineer", "location": "Bangalore, India", "start_date": "04/2008", "end_date": "05/2011", "currently_work_here": false}
-]
+${experienceData}
 
 **EDUCATION_DETAILS** (use for Education questions):
-[
-  {"entry": 1, "school": "Liverpool John Moores University, UK", "degree": "Master of Science (M.S.)", "field": "Computer Science", "graduation_year": "2021", "gpa": "3.5"},
-  {"entry": 2, "school": "K.S.I.T (V.T.U), Bangalore", "degree": "Bachelor of Engineering (B.E.)", "field": "Computer Science", "graduation_year": "2008", "gpa": "3.2"}
-]
+${educationData}
 
 **CRITICAL INDEXING INSTRUCTIONS:**
-- When you see [Entry: 1] -> use experience_details[0] or education_details[0] (ARRAY INDEX = Entry Number - 1)
-- When you see [Entry: 2] -> use experience_details[1] or education_details[1]
-- When you see [Entry: 3] -> use experience_details[2] or education_details[2]
-- When you see [Entry: 6] -> use experience_details[5] or education_details[5]
-- EXAMPLE: "Company [Entry: 2]" = experience_details[1].company = "BMC Netreo"
-- EXAMPLE: "School [Entry: 1]" = education_details[0].school = "Liverpool John Moores University, UK"
-
-DO NOT just return the entry number! Look up the actual data from the arrays!
+- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
+- "Company [Entry: 2]" -> experience_details[1].companyKey
+- "School [Entry: 1]" -> education_details[0].institution
+- DO NOT return the entry number literally — look up the actual value in the array.
+- If the requested index does not exist in the array, return "N/A".
 `;
 
     batchPrompt += `
@@ -425,12 +435,14 @@ Questions:
           if (response.ok) {
             const result = await response.json();
             if (result.choices && result.choices.length > 0) {
-              const content = result.choices[0].message.content;
-              parseResponse(content);
+              const content = result.choices[0]?.message?.content;
+              if (typeof content === 'string' && content.length > 0) {
+                parseResponse(content);
 
-              if (results.size > 0) {
-                printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
-                return results;
+                if (results.size > 0) {
+                  printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
+                  return results;
+                }
               }
             }
           } else {
@@ -455,12 +467,14 @@ Questions:
           if (response.ok) {
             const result = await response.json();
             if (result.choices && result.choices.length > 0) {
-              const content = result.choices[0].message.content;
-              parseResponse(content);
+              const content = result.choices[0]?.message?.content;
+              if (typeof content === 'string' && content.length > 0) {
+                parseResponse(content);
 
-              if (results.size > 0) {
-                printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
-                return results;
+                if (results.size > 0) {
+                  printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
+                  return results;
+                }
               }
             }
           } else {

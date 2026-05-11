@@ -206,10 +206,6 @@ export function getQuestionsSync(): Questions | null {
     return questionsCache;
 }
 
-export function getSecretsSync(): Secrets | null {
-    return secretsCache;
-}
-
 /**
  * Preload all configs (call this at extension init)
  */

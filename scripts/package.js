@@ -21,7 +21,6 @@ const INCLUDE = [
   'icons',
   'dist/background.js',
   'dist/content.bundle.js',
-  'dist/content_loader.js',
   'dist/popup.bundle.js',
   'dist/options.bundle.js',
 ];

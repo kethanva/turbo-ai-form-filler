@@ -57,7 +57,7 @@ export async function huggingfaceAnswerQuestion(
       throw new Error("HuggingFace client is not available!");
     }
 
-    // Build prompt
+    // Build prompt — prefer userInformationAll; fall back to configFilesContent
     const userInfo = userInformationAll || configFilesContent || "N/A";
     let prompt = `You are an intelligent AI assistant filling out a job application form and answering like a human candidate.
 Respond concisely based on the type of question:
@@ -70,16 +70,13 @@ Respond concisely based on the type of question:
 6. For **multiple choice**, select the EXACT option text from the provided list.
 7. If asked for "name of course" or "course name", respond with the COURSE ABBREVIATION (e.g., "B.E", "M.S"), NOT the person's name.
 
-IMPORTANT: 
+IMPORTANT:
 - "Name of postgraduate course" = course abbreviation like "M.S", NOT person's name
 - "Name of undergraduate course" = course abbreviation like "B.E", NOT person's name
-- Person's name (Kethan VA) is different from course names (B.E, M.S)
+- Person's name is different from course names (e.g. B.E, M.S)
 
-User Configuration (personals.py and questions.py):
-${configFilesContent || "N/A"}
-
-Additional User Information:
-${userInformationAll || "N/A"}
+User Information:
+${userInfo}
 
 Question: ${question}
 `;
@@ -149,14 +146,13 @@ Question: ${question}
 
     // Validate response structure
     if (result.choices && result.choices.length > 0) {
-      const answer = result.choices[0].message.content.trim();
+      const rawContent = result.choices[0]?.message?.content;
+      const answer = typeof rawContent === 'string' ? rawContent.trim() : '';
       if (answer) {
-        //printLog(`\nHuggingFace Answer: ${answer}`);
         return answer;
-      } else {
-        printLog("Warning: HuggingFace returned empty response");
-        return null;
       }
+      printLog("Warning: HuggingFace returned empty response");
+      return null;
     } else {
       printLog(`HuggingFace API returned unexpected response: ${JSON.stringify(result)}`);
       return null;

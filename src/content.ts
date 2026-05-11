@@ -369,10 +369,16 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       const isFreshteamDatepicker = input.classList.contains('start_date') ||
         input.classList.contains('end_date') ||
         input.closest('.datepicker-popover') !== null;
+      // Keka / jQuery-UI datepickers: readonly text inputs paired with a popup calendar.
+      // Detected by the `hasDatepicker` class (jQuery-UI convention used by Keka) or
+      // an `.input-calendar` wrapper. These must be filled even though they are readonly.
+      const isJqueryUIDatepicker = input.classList.contains('hasDatepicker') ||
+        input.closest('.input-calendar') !== null;
+      const isReadonlyDatepicker = isFreshteamDatepicker || isJqueryUIDatepicker;
       if ((input as any).disabled) {
         return;
       }
-      if (((input as any).readOnly || input.getAttribute('readonly') !== null) && !isFreshteamDatepicker) {
+      if (((input as any).readOnly || input.getAttribute('readonly') !== null) && !isReadonlyDatepicker) {
         return;
       }
 
@@ -391,11 +397,29 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       // BUT: Skip these checks for spl-* elements (custom components may have non-standard styling)
       if (!isSplElement) {
         const cs = getComputedStyle(input);
-        if (input.hidden ||
+        // Design systems (MUI, hirist, etc.) often visually hide the native
+        // radio/checkbox and make the <label> the click target. Keep those
+        // inputs if they have an associated <label for="..."> we can target.
+        const inputType = (input as HTMLInputElement).type;
+        const isRadioOrCheckbox = input.tagName.toLowerCase() === 'input' &&
+          (inputType === 'radio' || inputType === 'checkbox');
+        const hasAssociatedLabel = isRadioOrCheckbox && !!input.id &&
+          !!document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+
+        // Select2 visually hides the native <select> (visibility:hidden + aria-hidden=true)
+        // and renders its own UI. The native element still owns the value, so we keep it
+        // for filling — setting .value + dispatching change updates Select2's UI via its
+        // own change listener.
+        const isSelect2Hidden = input.tagName.toLowerCase() === 'select' &&
+          input.classList.contains('select2-hidden-accessible');
+
+        const isHidden = input.hidden ||
           input.getAttribute('hidden') !== null ||
           (input.getAttribute('aria-hidden') === 'true' && !isListbox && input.tagName.toLowerCase() !== 'ui5-date-picker-xweb-calendar-widget') ||
           cs.display === 'none' ||
-          cs.visibility === 'hidden') {
+          cs.visibility === 'hidden';
+
+        if (isHidden && !hasAssociatedLabel && !isSelect2Hidden) {
           return;
         }
       } else {
@@ -715,6 +739,25 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
     }
 
+    // --- HIRIST / GENERIC QUESTION-TEXT CONTAINER ---
+    // Pattern: field lives inside a per-question wrapper (e.g. hirist's
+    // `.short-answer-question-container`, `.single-answer-question-container`)
+    // that contains a sibling `.question-text` / `.mandatory-question` node
+    // holding the real label. Must run BEFORE the GEM sibling walker below,
+    // otherwise that walker grabs the PREVIOUS question's container text and
+    // every label gets shifted by one field.
+    if (!question) {
+      const fieldContainer = element.closest(
+        '.short-answer-question-container, .single-answer-question-container, .multiple-answer-question-container'
+      );
+      if (fieldContainer) {
+        const qt = fieldContainer.querySelector('.question-text, .mandatory-question');
+        if (qt) {
+          question = this.getCleanLabelText(qt);
+        }
+      }
+    }
+
     // --- GEM / GENERIC SIBLING LABEL SUPPORT ---
     // Handles forms where the label is a sibling of the input's container (e.g. Gem forms)
     // Structure: Container -> Span (Label) + Div (Input Wrapper) -> Input
@@ -875,14 +918,21 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     let rowText = '';
     let entryType = ''; // To track what type of entry this is (experience, education, etc.)
 
-    // Method 0: Check for array-indexed element IDs (e.g., experienceData[0].title)
+    // Method 0: Check for array-indexed element IDs/names
+    //   - Phenom/Cisco: experienceData[0].title, educationData[1].schoolName (id)
+    //   - Keka:         ExperienceDetails[0].companyName, EducationDetails[1].degree (name)
+    //   - Generic:      experience[0], education[2]
+    // We check both `id` and `name` so Keka-style forms (which only carry the index in `name`)
+    // still get the entry context appended to the question.
     const elementId = element.id || '';
-    const arrayIndexMatch = elementId.match(/(experience|education|employment|work|job|school)Data?\[(\d+)\]/i);
+    const elementName = element.getAttribute('name') || '';
+    const arrayIndexRegex = /(experience|education|employment|work|job|school)(?:Data|Details)?\[(\d+)\]/i;
+    const arrayIndexMatch = elementId.match(arrayIndexRegex) || elementName.match(arrayIndexRegex);
     if (arrayIndexMatch) {
       entryType = arrayIndexMatch[1]; // e.g., "experience", "education"
       const entryNum = parseInt(arrayIndexMatch[2]) + 1; // Convert 0-indexed to 1-indexed
       question += ` [${entryType.charAt(0).toUpperCase() + entryType.slice(1)} Entry: ${entryNum}]`;
-      printLog(`Context added: ${entryType} Entry ${entryNum} from array-indexed ID`);
+      printLog(`Context added: ${entryType} Entry ${entryNum} from array-indexed id/name`);
     }
 
     // Only do other detection if we didn't find an array index
@@ -1290,7 +1340,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         (questionLower.includes('start') || questionLower.includes('end') ||
           questionLower.includes('from') || questionLower.includes('to')) &&
         (questionLower.includes('date') || questionLower.includes('month') ||
-          placeholder.toUpperCase().includes('MM') && !placeholder.toUpperCase().includes('DD'));
+          (placeholder.toUpperCase().includes('MM') && !placeholder.toUpperCase().includes('DD')));
 
       // Check if placeholder explicitly shows MM/YYYY format (no day component)
       const isMonthYearPlaceholder = placeholder &&
@@ -1315,8 +1365,6 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   private determineQuestionType(type: string, options?: string[]): string {
     if (type === 'radio') {
       return 'radio';
-    } else if (type === 'checkbox') {
-      return 'checkbox';
     } else if (type === 'checkbox') {
       return 'checkbox';
     } else if (type === 'select-one' || type === 'combobox' || type === 'listbox' || (type === 'select' && options && options.length > 0)) {
@@ -1444,6 +1492,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               break;
             }
           }
+
+          // Spinbutton path could not extract valid month/year.
+          // Do NOT fall through to plain-text fill — that would dump a date string
+          // into a numeric spinbutton and break the field.
+          printLog(`⚠ Skipping Workday ${ariaLabel} spinbutton: could not parse "${value}" as a number`);
+          break;
         }
 
         // Regular text input handling
@@ -1531,15 +1585,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           if (expectedFormat.startsWith('MM') && expectedFormat.includes('DD')) {
             // MM-DD-YYYY or MM/DD/YYYY
             const separator = expectedFormat.includes('/') ? '/' : '-';
-            formattedDate = `${month}${separator}${day}${separator}${year} `;
+            formattedDate = `${month}${separator}${day}${separator}${year}`;
           } else if (expectedFormat.startsWith('DD') && expectedFormat.includes('MM')) {
             // DD-MM-YYYY or DD/MM/YYYY
             const separator = expectedFormat.includes('/') ? '/' : '-';
-            formattedDate = `${day}${separator}${month}${separator}${year} `;
+            formattedDate = `${day}${separator}${month}${separator}${year}`;
           } else if (expectedFormat.startsWith('YYYY')) {
             // YYYY-MM-DD or YYYY/MM/DD
             const separator = expectedFormat.includes('/') ? '/' : '-';
-            formattedDate = `${year}${separator}${month}${separator}${day} `;
+            formattedDate = `${year}${separator}${month}${separator}${day}`;
           }
 
           // For HTML5 date inputs, always use YYYY-MM-DD regardless of placeholder
@@ -1564,7 +1618,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           const hours = timeMatch[1].padStart(2, '0');
           const mins = timeMatch[2];
           const secs = timeMatch[3] || '00';
-          input.value = `${hours}:${mins}:${secs} `;
+          input.value = `${hours}:${mins}:${secs}`;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
         }
@@ -1608,7 +1662,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         // Get the checkbox label to check for terms/conditions/agreement
         const checkboxLabel = this.extractQuestion(element).toLowerCase();
 
-        // Auto-check if this is a terms/conditions/agreement checkbox
+        // Auto-check if this is a terms/conditions/agreement checkbox.
+        // NOTE: We intentionally do NOT auto-check subscribe/newsletter/marketing
+        // boxes — those require explicit user consent.
         const isTermsCheckbox =
           checkboxLabel.includes('agree') ||
           checkboxLabel.includes('accept') ||
@@ -1619,8 +1675,6 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           checkboxLabel.includes('read and') ||
           checkboxLabel.includes('i have read') ||
           checkboxLabel.includes('consent') ||
-          checkboxLabel.includes('subscribe') ||
-          checkboxLabel.includes('newsletter') ||
           checkboxLabel.includes('confirm') ||
           checkboxLabel.includes('acknowledge');
 
@@ -1822,9 +1876,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           const optLabel = (opt.label || '').toLowerCase().trim();
           const optDataValue = (opt.getAttribute('data-value') || '').toLowerCase().trim();
 
-          // Skip placeholder options
+          // Skip placeholder options — do NOT include '0' here because Greenhouse
+          // uses value="0" for the "No" option in Yes/No dropdowns.
           const isPlaceholderOpt = optValue === '' || optValue === 'none' || optValue === 'null' ||
-            optValue === 'select' || optValue === '-1' || optValue === '0' ||
+            optValue === 'select' || optValue === '-1' ||
+            optText === '' ||
             optText.includes('select') || optText.includes('choose') ||
             optText.includes('option') || optText.includes('please');
 
@@ -1894,13 +1950,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           const isYesNoQuestion = hasYesOption && hasNoOption;
 
           // Get the question text to determine appropriate default
-          const questionText = input.getAttribute('aria-label')?.toLowerCase() ||
-            input.closest('[data-test-form-element]')?.querySelector('label')?.textContent?.toLowerCase() || '';
+          const questionText = this.extractQuestion(element).toLowerCase();
 
           if (isYesNoQuestion) {
             // For positive questions (willing, comfortable, agree, etc), default to Yes
             const positiveKeywords = ['willing', 'comfortable', 'agree', 'able', 'can you', 'do you', 'have you', 'are you'];
-            const negativeKeywords = ['disability', 'conflict', 'legal issue', 'criminal', 'terminated', 'fired'];
+            const negativeKeywords = ['disability', 'conflict', 'legal issue', 'criminal', 'terminated', 'fired', 'sponsor', 'require visa', 'require sponsorship', 'visa sponsorship'];
 
             const isPositiveQuestion = positiveKeywords.some(kw => questionText.includes(kw));
             const isNegativeQuestion = negativeKeywords.some(kw => questionText.includes(kw));
@@ -2277,39 +2332,44 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
   // Helper to parse various date formats to ISO (yyyy-mm-dd)
   private parseDateToISO(value: string): string | null {
+    const trimmed = value.trim();
+
     // Try common formats
     const datePatterns = [
       // yyyy-mm-dd (already ISO)
-      { regex: /^(\d{4})-(\d{2})-(\d{2})$/, format: (m: RegExpMatchArray) => `${m[1]} -${m[2]} -${m[3]} ` },
-      // mm/dd/yyyy or mm-dd-yyyy
-      { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]} -${m[1].padStart(2, '0')} -${m[2].padStart(2, '0')} ` },
-      // dd/mm/yyyy (European)
-      { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]} -${m[2].padStart(2, '0')} -${m[1].padStart(2, '0')} ` },
+      { regex: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, format: (m: RegExpMatchArray) => `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` },
+      // mm/dd/yyyy or mm-dd-yyyy (US)
+      { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` },
       // Month dd, yyyy
       {
         regex: /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* (\d{1,2}),? (\d{4})$/i, format: (m: RegExpMatchArray) => {
           const months: { [key: string]: string } = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
-          return `${m[3]} -${months[m[1].toLowerCase().substring(0, 3)]} -${m[2].padStart(2, '0')} `;
+          return `${m[3]}-${months[m[1].toLowerCase().substring(0, 3)]}-${m[2].padStart(2, '0')}`;
         }
       },
     ];
 
     for (const pattern of datePatterns) {
-      const match = value.match(pattern.regex);
+      const match = trimmed.match(pattern.regex);
       if (match) {
         const result = pattern.format(match);
-        // Validate the result is a valid date
-        const testDate = new Date(result);
-        if (!isNaN(testDate.getTime())) {
+        // Validate by parsing the ISO string as UTC to avoid timezone shifts
+        const [y, mo, d] = result.split('-').map(Number);
+        const testDate = new Date(Date.UTC(y, mo - 1, d));
+        if (!isNaN(testDate.getTime()) && testDate.getUTCFullYear() === y &&
+            testDate.getUTCMonth() === mo - 1 && testDate.getUTCDate() === d) {
           return result;
         }
       }
     }
 
-    // Try JavaScript's native Date parsing as fallback
-    const nativeDate = new Date(value);
+    // Fallback: JavaScript's native Date parsing (timezone-safe via local getters)
+    const nativeDate = new Date(trimmed);
     if (!isNaN(nativeDate.getTime())) {
-      return nativeDate.toISOString().split('T')[0];
+      const y = nativeDate.getFullYear();
+      const mo = String(nativeDate.getMonth() + 1).padStart(2, '0');
+      const d = String(nativeDate.getDate()).padStart(2, '0');
+      return `${y}-${mo}-${d}`;
     }
 
     return null;
@@ -2322,6 +2382,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       });
     });
   }
+
+  getStatus(): { isRunning: boolean; filledCount: number } {
+    return { isRunning: this.isRunning, filledCount: this.filledCount };
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -2342,10 +2407,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === 'getStatus') {
-    sendResponse({
-      isRunning: formFiller['isRunning'],
-      filledCount: formFiller['filledCount']
-    });
+    sendResponse(formFiller.getStatus());
   }
 });
 

@@ -30,9 +30,5 @@ chrome.commands.onCommand.addListener((command) => {
   }
 });
 
-// Handle extension icon click (keep for backward compatibility, but may not work on Workday)
-chrome.action.onClicked.addListener((tab) => {
-  if (tab.id) {
-    chrome.tabs.sendMessage(tab.id, { action: 'startFilling' });
-  }
-});
+// Note: chrome.action.onClicked does not fire when manifest declares `default_popup`.
+// The popup UI handles the icon click path; no listener is needed here.

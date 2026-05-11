@@ -1,8 +1,9 @@
 // Options page for settings - handles tabs, JSON editors, and Chrome storage
 
 // ============ DEFAULTS (loaded from bundled JSON files) ============
-let defaultPersonals: any = null;
-let defaultQuestions: any = null;
+type JsonRecord = Record<string, unknown>;
+let defaultPersonals: JsonRecord | null = null;
+let defaultQuestions: JsonRecord | null = null;
 
 async function loadDefaults(): Promise<void> {
   try {
@@ -46,12 +47,13 @@ function initTabs(): void {
 }
 
 // ============ JSON VALIDATION ============
-function validateJSON(text: string): { valid: boolean; error?: string; parsed?: any } {
+function validateJSON(text: string): { valid: boolean; error?: string; parsed?: unknown } {
   try {
     const parsed = JSON.parse(text);
     return { valid: true, parsed };
-  } catch (e: any) {
-    return { valid: false, error: e.message };
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
+    return { valid: false, error: message };
   }
 }
 

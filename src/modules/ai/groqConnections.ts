@@ -125,14 +125,13 @@ export async function groqAnswerQuestion(
 
     // Validate response structure
     if (result.choices && result.choices.length > 0) {
-      const answer = result.choices[0].message.content.trim();
+      const rawContent = result.choices[0]?.message?.content;
+      const answer = typeof rawContent === 'string' ? rawContent.trim() : '';
       if (answer) {
-        //printLog(`\nGroq Answer: ${answer}`);
         return answer;
-      } else {
-        printLog("Warning: Groq returned empty response");
-        return null;
       }
+      printLog("Warning: Groq returned empty response");
+      return null;
     } else {
       printLog(`Groq API returned unexpected response: ${JSON.stringify(result)}`);
       return null;

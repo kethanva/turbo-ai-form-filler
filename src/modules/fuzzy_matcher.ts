@@ -205,8 +205,9 @@ class FuzzyMatcher {
     return null;
   }
 
-  extractSkills(description: string): string[] {
-    return ["Fuzzy Logic Skill Extraction Not Implemented"];
+  extractSkills(_description: string): string[] {
+    // Fuzzy skill extraction is not implemented; callers treat [] as "no match".
+    return [];
   }
 }
 
