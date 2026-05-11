@@ -6,15 +6,15 @@ A one-shot setup script handles everything: creates required config files, insta
 
 **macOS / Linux:**
 ```bash
-git clone https://github.com/YOUR_USERNAME/form-autopilot.git
-cd form-autopilot
+git clone https://github.com/kethanva/turbo-ai-form-filler.git
+cd turbo-ai-form-filler
 ./setup.sh
 ```
 
 **Windows:**
 ```cmd
-git clone https://github.com/YOUR_USERNAME/form-autopilot.git
-cd form-autopilot
+git clone https://github.com/kethanva/turbo-ai-form-filler.git
+cd turbo-ai-form-filler
 setup.bat
 ```
 

@@ -2,7 +2,7 @@
 export { };  // Force ES module output
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('form-autopilot extension installed');
+  console.log('turbo-ai-form-filler extension installed');
 });
 
 // Handle keyboard shortcut (Ctrl+Shift+F / Cmd+Shift+F)
