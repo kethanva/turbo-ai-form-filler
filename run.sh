@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to launch Chrome with the FormAutoPilot extension
+# Script to launch Chrome with the form-autopilot extension
 # Creates a separate Chrome instance with its own data directory (CHROME_DATA/ sibling of this script)
 # macOS only
 
@@ -22,7 +22,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 EXTENSION_DIR="$SCRIPT_DIR"
 CHROME_DATA_DIR="$SCRIPT_DIR/../CHROME_DATA"
 
-echo -e "${GREEN}🚀 FormAutoPilot - Chrome Launcher${NC}"
+echo -e "${GREEN}🚀 form-autopilot - Chrome Launcher${NC}"
 echo ""
 
 # Check if extension is built
@@ -208,7 +208,7 @@ if [ "$CHROME_TYPE" = "stable" ]; then
     echo -e "${CYAN}Step 3:${NC} Navigate to and select this folder:"
     echo -e "        ${GREEN}$EXTENSION_DIR${NC}"
     echo ""
-    echo -e "${CYAN}Step 4:${NC} The 'FormAutoPilot' extension should now appear!"
+    echo -e "${CYAN}Step 4:${NC} The 'form-autopilot' extension should now appear!"
     echo ""
     echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
     echo ""
@@ -222,7 +222,7 @@ else
     # Chromium or Canary - --load-extension should work
     echo -e "${GREEN}🎉 Using $CHROME_TYPE - --load-extension is supported!${NC}"
     echo ""
-    echo -e "${YELLOW}🚀 Launching Chrome with FormAutoPilot extension...${NC}"
+    echo -e "${YELLOW}🚀 Launching Chrome with form-autopilot extension...${NC}"
     
     "$CHROME_EXEC" \
         --user-data-dir="$CHROME_DATA_DIR" \
@@ -247,7 +247,7 @@ else
     echo -e "${YELLOW}📋 If extension doesn't appear:${NC}"
     echo "   1. Go to chrome://extensions/"
     echo "   2. Make sure 'Developer mode' toggle is ON"
-    echo "   3. Look for 'FormAutoPilot' in the list"
+    echo "   3. Look for 'form-autopilot' in the list"
 fi
 
 echo ""

@@ -2,7 +2,7 @@
 export { };  // Force ES module output
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('FormAutoPilot extension installed');
+  console.log('form-autopilot extension installed');
 });
 
 // Handle keyboard shortcut (Ctrl+Shift+F / Cmd+Shift+F)

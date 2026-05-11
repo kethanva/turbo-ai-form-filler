@@ -1,6 +1,6 @@
-# Contributing to FormAutoPilot
+# Contributing to form-autopilot
 
-First off, thank you for considering contributing to FormAutoPilot! It's people like you that make this tool better for everyone.
+First off, thank you for considering contributing to form-autopilot! It's people like you that make this tool better for everyone.
 
 ## Code of Conduct
 

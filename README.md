@@ -1,6 +1,6 @@
-# FormAutoPilot
+# form-autopilot
 
-![FormAutoPilot Banner](docs/banner.png)
+![form-autopilot Banner](docs/banner.png)
 
 > **AI-powered Chrome extension that automatically fills job application forms — press one shortcut and watch it go.**
 

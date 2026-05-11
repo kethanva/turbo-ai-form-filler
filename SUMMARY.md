@@ -1,4 +1,4 @@
-# Chrome Extension - FormAutoPilot
+# Chrome Extension : form-autopilot
 
 ## Project Summary
 

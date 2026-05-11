@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "FormAutoPilot",
+  "name": "form-autopilot",
   "version": "1.0.0",
   "description": "AI-powered form filler for job applications. Works on LinkedIn, Workday, Greenhouse, Lever, Ashby and more.",
   "permissions": [
