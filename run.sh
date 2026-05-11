@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to launch Chrome with the Auto Form Filler extension
-# This creates a separate Chrome instance with its own profile in /Volumes/SSD/projects/AI_JOBS/CHROME_DATA
+# Creates a separate Chrome instance with its own data directory (CHROME_DATA/ sibling of this script)
 # macOS only
 
 # IMPORTANT: Google Chrome stable does NOT support --load-extension flag.
@@ -20,7 +20,7 @@ NC='\033[0m' # No Color
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 EXTENSION_DIR="$SCRIPT_DIR"
-CHROME_DATA_DIR="/Volumes/SSD/projects/AI_JOBS/CHROME_DATA"
+CHROME_DATA_DIR="$SCRIPT_DIR/../CHROME_DATA"
 
 echo -e "${GREEN}🚀 Auto Form Filler - Chrome Launcher${NC}"
 echo ""

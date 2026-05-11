@@ -249,6 +249,10 @@ ${JSON.stringify(personalsData)}
     const experienceData = JSON.stringify(personalsData.experience_details || [], null, 2);
     const educationData = JSON.stringify(personalsData.education_details || [], null, 2);
 
+    // Dynamic "Present" date — always use the last day of the current year so
+    // jobs marked "Present" get a correct end date regardless of when the prompt runs.
+    const presentDateStr = `12/31/${new Date().getFullYear()}`;
+
     let batchPrompt = `You are a helpful assistant filling out a form.
 
 === PRIMARY DATA SOURCE (USE THIS FOR [Entry: X] QUESTIONS) ===
@@ -272,24 +276,24 @@ JavaScript arrays start at index 0. To find the correct entry:
 **Formula: array[Entry_Number - 1]**
 
 1. **FOR ANY QUESTION WITH [Entry: X]**: Extract ONLY from the arrays above.
-   - "Start Date [Entry: 6]" → experience_details[5].from → "2008-12" → "12/01/2008"
-   - "Employer [Entry: 6]" → experience_details[5].companyKey → "mphasis" (NOT "tavant"!)
-   - "End Year [Entry: 1]" → education_details[0].to → "2021-10" → "2021"
+   - "Start Date [Entry: 6]" → experience_details[5].from → "2010-06" → "06/01/2010"
+   - "Employer [Entry: 6]" → experience_details[5].companyKey → "company_b" (NOT "company_a"!)
+   - "End Year [Entry: 1]" → education_details[0].to → "2018-05" → "2018"
    - DO NOT use any data from the "General Context" section below
    - DO NOT use highlights, industry, description, or any text data
 
 2. **DATE FIELDS**: For "Start Date" or "End Date" questions:
    - Extract from the .from or .to field in the JSON array
    - **CRITICAL**: Convert YYYY-MM format to MM/01/YYYY
-   - **CRITICAL**: If the value is "Present", you MUST return "12/31/2025" NOT the from date
+   - **CRITICAL**: If the value is "Present", you MUST return "${presentDateStr}" (the last day of the current year). Do NOT return the entry's "from" date.
    
    **EXAMPLES**:
-   - "From [Entry: 1]" → experience_details[0].from → "2022-02" → return "02/01/2022"
-   - "To [Entry: 1]" → experience_details[0].to → "Present" → return "12/31/2025" (NOT "02/01/2022"!)
-   - "From [Entry: 2]" → experience_details[1].from → "2019-03" → return "03/01/2019"
-   - "To [Entry: 2]" → experience_details[1].to → "2022-02" → return "02/01/2022"
-   - "From [Entry: 3]" → experience_details[2].from → "2013-11" → return "11/01/2013"
-   - "To [Entry: 3]" → experience_details[2].to → "2019-03" → return "03/01/2019" (NOT "11/01/2013"!)
+   - "From [Entry: 1]" → experience_details[0].from → "2020-08" → return "08/01/2020"
+   - "To [Entry: 1]"   → experience_details[0].to   → "Present"  → return "${presentDateStr}" (NOT "08/01/2020"! That is the From date, not the To date.)
+   - "From [Entry: 2]" → experience_details[1].from → "2017-04" → return "04/01/2017"
+   - "To [Entry: 2]"   → experience_details[1].to   → "2020-07" → return "07/01/2020" (Entry 2 ended one month before Entry 1 started)
+   - "From [Entry: 3]" → experience_details[2].from → "2014-09" → return "09/01/2014"
+   - "To [Entry: 3]"   → experience_details[2].to   → "2017-03" → return "03/01/2017" (NOT "09/01/2014"! That is the From date.)
 
 3. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
    - Extract from the .from or .to field in the JSON array
@@ -297,19 +301,19 @@ JavaScript arrays start at index 0. To find the correct entry:
 
 4. **LOCATION FIELDS**: 
    - **IF AND ONLY IF** the question asks for "Location", "City", "Place", or "Address" (specifically for Work/Education):
-   - **THEN** return "Bangalore, India".
+   - **THEN** return the location from user profile (e.g. "San Francisco, USA").
    - **CRITICAL EXCEPTION**: If the question asks for "Salary", "CTC", "Compensation", or "Pay", SKIP this rule and see Rule 5.
    
 5. **SALARY / CTC / COMPENSATION FIELDS**:
    - Look for keywords: "CTC", "Salary", "Compensation", "Remuneration", "Pay".
    - Answer with the **numeric value only** from the user data (e.g. 80000).
    - Do NOT add currency symbols unless asked.
-   - Do NOT answer with "Bangalore" or any location.
+   - Do NOT answer with a city/location.
    
    **EXAMPLES**:
    - "Current CTC?" → "80000"
    - "Expected Salary?" → "85000"
-   - "What is your current Location?" → "Bangalore, India"
+   - "What is your current Location?" → "San Francisco, USA"
 
 6. **NOTICE PERIOD**:
     - "Notice Period" -> Extract from "Notice Period" or "soon_join_us" (e.g. "60 days")
