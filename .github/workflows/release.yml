@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package extension
+        run: node scripts/package.js
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Auto Form Filler v${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Installation
+
+            ### Option 1 — Chrome Web Store *(coming soon)*
+            Install directly from the Chrome Web Store.
+
+            ### Option 2 — Manual (Developer Mode)
+            1. Download **release.zip** below and unzip it.
+            2. Open `chrome://extensions` → enable **Developer mode**.
+            3. Click **Load unpacked** and select the unzipped folder.
+
+            ## Setup
+            After installing, click the extension icon → **Settings** and add your API keys:
+            - **Groq** (recommended, fast, free tier): https://console.groq.com/keys
+            - **HuggingFace** (free): https://huggingface.co/settings/tokens
+
+            ## Changes
+            See [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for what's new.
+          files: release.zip
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
