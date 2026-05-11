@@ -1,0 +1,51 @@
+{
+    "first_name": "YOUR_FIRST_NAME",
+    "middle_name": "",
+    "last_name": "YOUR_LAST_NAME",
+    "email": "your.email@example.com",
+    "phone": "1234567890",
+    "country_code": "+1",
+    "city": "Your City",
+    "state": "Your State",
+    "country": "Your Country",
+    "linkedin": "https://www.linkedin.com/in/your-profile",
+    "github": "https://github.com/your-username",
+    "portfolio": "",
+    "years_of_experience": 5,
+    "notice_period": "30 days",
+    "current_ctc": 100000,
+    "expected_ctc": 120000,
+    "willing_to_relocate": true,
+    "willing_to_onsite": true,
+    "willing_to_travel": true,
+    "require_visa_sponsorship": false,
+    "education_details": [
+        {
+            "degree": "Bachelor of Science",
+            "field": "Computer Science",
+            "institution": "Your University",
+            "from": "2015",
+            "to": "2019"
+        }
+    ],
+    "experience_details": [
+        {
+            "companyKey": "company_1",
+            "title": "Software Engineer",
+            "from": "2019-01",
+            "to": "Present",
+            "location": "Your City, Country",
+            "highlights": [
+                "Developed web applications",
+                "Worked with modern tech stack"
+            ]
+        }
+    ],
+    "skills": [
+        "JavaScript",
+        "Python",
+        "React",
+        "Node.js"
+    ],
+    "user_information_all": "I am a software engineer with 5 years of experience..."
+}

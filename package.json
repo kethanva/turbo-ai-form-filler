@@ -1,0 +1,27 @@
+{
+  "name": "form-autopilot",
+  "version": "1.0.0",
+  "description": "AI-powered Chrome extension that auto-fills job application forms on LinkedIn, Workday, Greenhouse, Lever, and more",
+  "keywords": ["chrome-extension", "form-filler", "AI", "job-application", "LLM", "automation"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kethanva/form-autopilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kethanva/form-autopilot/issues"
+  },
+  "homepage": "https://github.com/kethanva/form-autopilot#readme",
+  "scripts": {
+    "build":   "tsc && npm run bundle",
+    "bundle":  "npx esbuild dist/content.js --bundle --outfile=dist/content.bundle.js --format=iife --platform=browser && npx esbuild dist/popup.js --bundle --outfile=dist/popup.bundle.js --format=iife --platform=browser && npx esbuild dist/options.js --bundle --outfile=dist/options.bundle.js --format=iife --platform=browser",
+    "watch":   "tsc --watch",
+    "clean":   "rm -rf dist",
+    "package": "node scripts/package.js"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.251",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.3.3"
+  }
+}
