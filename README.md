@@ -116,12 +116,13 @@ This handles everything: creates your local config files, installs dependencies,
 
 Click the extension icon → **Settings** → **API Keys**.
 
-| Provider | Cost | Speed | Where to get it |
+| Provider | Cost | Speed | Recommendation |
 |---|---|---|---|
-| **Groq** (recommended) | Free tier | ⚡ Very fast (LPU) | [console.groq.com/keys](https://console.groq.com/keys) |
-| **HuggingFace** | Free | Moderate | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| **Groq** (Primary) | **~$0.1 / 10¢ / ₹9** per month | ⚡ Ultra Fast | **Best Value.** Most economical choice. |
+| **HuggingFace** | Free (Rate Limited) | Moderate | Good backup option. |
 
-You only need one. Groq's free tier is generous enough for an intensive job search.
+> [!IMPORTANT]
+> **Why Groq?** It is significantly more economical and convenient than using expensive LLM APIs (OpenAI/Claude) or setting up complex local Ollama servers. For a typical heavy job search, your monthly bill will likely be **less than $0.10 (10 cents / 9 Rupees)**. It is essentially free while providing state-of-the-art speed.
 
 ### 2. Build Your Profile
 

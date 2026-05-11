@@ -41,6 +41,9 @@ Then load the extension in Chrome:
 4. Create a new API key (starts with `gsk_`)
 5. In Chrome: click the extension icon → **Settings** → **API Keys** → paste and save
 
+> [!TIP]
+> **Extremely Economical:** Groq is ultra-cheap, typically costing only **$0.1 / 10¢ / ~9₹ per month** even for heavy usage. This is far more convenient and cost-effective than managing local LLMs or paying for expensive enterprise API keys.
+
 ### HuggingFace Token (Fallback — FREE)
 1. Go to https://huggingface.co/
 2. Sign up or log in
