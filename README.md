@@ -14,10 +14,9 @@
 ## ✨ Features
 
 - **🚀 One-Click Fill**: Fill entire complex job applications in seconds.
-- **🧠 AI-Powered**: Uses advanced LLMs (Groq, HuggingFace) to understand context and map your profile to questions.
+- **🧠 AI-Powered**: Uses advanced LLMs (Groq, HuggingFace etc) to understand context and map your profile to questions.
 - **🛡️ Privacy First**: Your data stays in your browser. API keys are stored locally. No tracking.
 - **🌍 Universal Support**: Works on LinkedIn, Workday, Greenhouse, Lever, Ashby, iCIMS, and generic HTML forms.
-- **⚡ Built for Speed**: Powered by Groq's LPU for near-instant responses.
 
 ---
 
@@ -79,7 +78,7 @@ Settings → **Profile**. Paste your details as JSON. You can find a template in
 
 - **Core**: TypeScript, Manifest V3
 - **Bundler**: esbuild
-- **AI**: Groq SDK, HuggingFace API
+- **AI**: Groq SDK, HuggingFace API etc
 - **Logic**: Intelligent DOM traversal & fuzzy matching fallback
 
 ---
