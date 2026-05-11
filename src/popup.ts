@@ -83,6 +83,9 @@ document.addEventListener('DOMContentLoaded', () => {
           if (response && response.success) {
             statusDiv.textContent = 'Form filling complete!';
             statusDiv.className = 'status ready';
+            if (filledCountSpan && typeof response.filledCount === 'number') {
+              filledCountSpan.textContent = `Total: ${response.filledCount}`;
+            }
             setTimeout(updateStatus, 1000);
           } else {
             statusDiv.textContent = `Error: ${response?.error || 'Unknown error'}`;

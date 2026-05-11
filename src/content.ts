@@ -47,32 +47,29 @@ class FormFiller {
   private isRunning: boolean = false;
   private filledCount: number = 0;
 
-  async startFilling(): Promise<void> {
+  async startFilling(): Promise<number> {
     if (this.isRunning) {
       printLog("Form filling already in progress...");
-      return;
+      return this.filledCount;
     }
 
     this.isRunning = true;
     this.filledCount = 0;
-    printLog("Starting form filling...");
 
     try {
-      // Load configs
+      // Detect elements first — bail silently for iframes and pages with no forms.
+      // This avoids initializing LLM clients on pages that have nothing to fill.
+      const formElements = this.findFormElements();
+      if (formElements.length === 0) {
+        return 0;
+      }
+
+      printLog(`Starting form filling... (${formElements.length} elements)`);
+
+      // Load configs and initialize LLM now that we know there is work to do
       const secrets = await loadSecrets();
       personals = await loadPersonals();
-
-      // Initialize LLM manager
       await llmManager.initializeClients(secrets);
-
-      // Find all form elements
-      const formElements = this.findFormElements();
-      printLog(`Found ${formElements.length} form elements to fill`);
-
-      if (formElements.length === 0) {
-        printLog("No form elements found to fill");
-        return;
-      }
 
       // Check if batch mode is enabled (default: true)
       const settings = await this.getSettings();
@@ -158,8 +155,10 @@ class FormFiller {
       }
 
       printLog(`Form filling complete! Filled ${this.filledCount} elements.`);
+      return this.filledCount;
     } catch (error) {
       printLog(`Error during form filling: ${error}`);
+      return this.filledCount;
     } finally {
       this.isRunning = false;
     }
@@ -268,36 +267,25 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
    */
   private findActiveFormContainer(): HTMLElement | Document | null {
     const hostname = window.location.hostname.toLowerCase();
-    printLog(`[DEBUG] findActiveFormContainer called. Hostname: ${hostname}`);
 
-    // 1. Only apply scoping on LinkedIn
+    // On LinkedIn, scope strictly to the Easy Apply modal to avoid search facets.
     if (hostname.includes('linkedin.com')) {
-      printLog('[DEBUG] LinkedIn detected - applying STRICT modal scoping');
-      // STRICT MODE: Only check for specific Easy Apply identifiers as requested
-
-      // A. Specific Easy Apply Modal ID (Highest Priority)
       const easyApplyModalId = document.querySelector('[data-test-modal-id="easy-apply-modal"]');
-      printLog(`[DEBUG] Easy Apply modal by ID: ${easyApplyModalId ? 'FOUND' : 'NOT FOUND'}`);
       if (easyApplyModalId) {
-        printLog('✅ Scoped form search to: [data-test-modal-id="easy-apply-modal"]');
+        printLog('✅ Scoped to Easy Apply modal');
         return easyApplyModalId as HTMLElement;
       }
 
-      // B. Specific Easy Apply Modal Class
       const easyApplyModalClass = document.querySelector('.jobs-easy-apply-modal');
-      printLog(`[DEBUG] Easy Apply modal by class: ${easyApplyModalClass ? 'FOUND' : 'NOT FOUND'}`);
       if (easyApplyModalClass) {
-        printLog('✅ Scoped form search to: .jobs-easy-apply-modal');
+        printLog('✅ Scoped to Easy Apply modal');
         return easyApplyModalClass as HTMLElement;
       }
 
-      // Strict fallback: If on LinkedIn and no Easy Apply modal found, return NULL to avoid scanning page
-      printLog('⛔ LinkedIn active but no Easy Apply modal found. BLOCKING all form detection.');
+      printLog('⛔ LinkedIn: no Easy Apply modal found — blocking form detection');
       return null;
     }
 
-    // Default: Return the whole document (for all other sites)
-    printLog('[DEBUG] Non-LinkedIn site - using document as root');
     return document;
   }
 
@@ -431,11 +419,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       // Only skip if already checked checkboxes/radios AND they match what we would set
       // (We'll let the LLM decide what to set)
 
-      // For select elements, always include them (force fill)
-      if (input.tagName.toLowerCase() === 'select') {
-        const selectLabel = this.extractQuestion(input);
-        printLog(`Select "${selectLabel}": included for filling (force fill mode)`);
-      }
+      // Select elements are always included (force fill mode)
 
       // For checkboxes/radios, include them (force fill will set based on LLM answer)
       // For text inputs, include them even if they have values (force fill)
@@ -490,15 +474,19 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     const divBasedElements = this.findDivBasedFormElements(root);
 
     // Merge, avoiding duplicates (by element reference)
+    const standardCount = elements.length;
     const existingElements = new Set(elements.map(e => e.element));
+    let divAddedCount = 0;
     divBasedElements.forEach(divEl => {
       if (!existingElements.has(divEl.element)) {
         elements.push(divEl);
+        divAddedCount++;
       }
     });
 
-    printLog(`Total elements to fill: ${elements.length} (${elements.length - divBasedElements.length} standard + ${divBasedElements.filter(d => !existingElements.has(d.element)).length} div-based)`);
-
+    if (elements.length > 0) {
+      printLog(`Found ${elements.length} form elements (${standardCount} standard + ${divAddedCount} div-based)`);
+    }
     return elements;
   }
 
@@ -590,12 +578,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             question,
             options
           });
-
-          printLog(`Div-based element found: "${question}" (type: ${controlEl.type || 'text'})`);
         }
       });
     }
 
+    if (elements.length > 0) {
+      printLog(`Div-based elements: ${elements.length} found`);
+    }
     return elements;
   }
 
@@ -2387,6 +2376,10 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     return { isRunning: this.isRunning, filledCount: this.filledCount };
   }
 
+  hasFormElements(): boolean {
+    return this.findFormElements().length > 0;
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
@@ -2397,9 +2390,18 @@ const formFiller = new FormFiller();
 
 // Listen for messages from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Only respond if we are the top frame OR we have elements to fill
+  // This prevents empty iframes (like tracking pixels or ads) from hijacking the response
+  const isTopFrame = window.self === window.top;
+  const hasElements = formFiller.hasFormElements();
+  
+  if (!isTopFrame && !hasElements) {
+    return false; // Don't handle this message, let other frames (like the main one) respond
+  }
+
   if (message.action === 'startFilling') {
-    formFiller.startFilling().then(() => {
-      sendResponse({ success: true });
+    formFiller.startFilling().then((filled) => {
+      sendResponse({ success: true, filledCount: filled });
     }).catch((error) => {
       sendResponse({ success: false, error: String(error) });
     });
@@ -2408,6 +2410,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.action === 'getStatus') {
     sendResponse(formFiller.getStatus());
+    return true;
   }
 });
 
@@ -2416,5 +2419,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   formFiller.startFilling();
 };
 
-printLog('Form filler content script loaded');
+if (window.self === window.top) {
+  printLog('Form filler content script loaded');
+}
 
