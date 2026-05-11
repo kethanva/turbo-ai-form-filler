@@ -1,60 +1,62 @@
 # Installation Guide
 
-## Quick Start
+## ⚡ Quick Setup (Recommended — works on macOS/Linux/Windows)
 
-1. **Build the extension:**
-   ```bash
-   cd extension
-   npm install
-   npm run build
-   ```
+A one-shot setup script handles everything: creates required config files, installs dependencies, and builds the extension.
 
-2. **Load in Chrome:**
-   - Open Chrome
-   - Go to `chrome://extensions/`
-   - Enable "Developer mode" (toggle in top right)
-   - Click "Load unpacked"
-   - Select the `extension` folder
+**macOS / Linux:**
+```bash
+git clone https://github.com/YOUR_USERNAME/form-autopilot.git
+cd form-autopilot
+./setup.sh
+```
 
-3. **Configure API Keys:**
-   - Click the extension icon
-   - Click "Settings"
-   - Enter your API keys (see below for how to get them)
-   - Click "Save Settings"
+**Windows:**
+```cmd
+git clone https://github.com/YOUR_USERNAME/form-autopilot.git
+cd form-autopilot
+setup.bat
+```
 
-4. **Start using:**
-   - Navigate to any webpage with forms
-   - Click the extension icon
-   - Click "Start Filling Forms"
+The script will:
+1. ✅ Copy `personals.example.json` → `personals.json` (your profile template)
+2. ✅ Copy `secrets.example.json` → `secrets.json` (API key config)
+3. ✅ Run `npm install`
+4. ✅ Run `npm run build`
+5. ✅ Print clear next steps
 
-## Getting API Keys
+Then load the extension in Chrome:
+- Open `chrome://extensions`
+- Enable **Developer mode** (top-right toggle)
+- Click **Load unpacked** and select the cloned folder
 
-### Groq API Key (Primary - Recommended)
+---
 
+## 🔑 Getting API Keys
+
+### Groq API Key (Primary — Recommended)
 1. Go to https://console.groq.com/
-2. Sign up or log in
-3. Navigate to API Keys section
-4. Create a new API key
-5. Copy the key (starts with `gsk_`)
-6. Paste it in the extension settings
+2. Sign up or log in (free)
+3. Navigate to **API Keys** section
+4. Create a new API key (starts with `gsk_`)
+5. In Chrome: click the extension icon → **Settings** → **API Keys** → paste and save
 
-### HuggingFace Token (Fallback - FREE)
-
+### HuggingFace Token (Fallback — FREE)
 1. Go to https://huggingface.co/
-2. Sign up or log in (it's free!)
-3. Go to Settings → Access Tokens
-4. Create a new token
-5. Copy the token (starts with `hf_`)
-6. Paste it in the extension settings
+2. Sign up or log in
+3. Go to **Settings** → **Access Tokens**
+4. Create a new token (starts with `hf_`)
+5. Paste it in the extension **Settings** → **API Keys**
 
-## Customizing Personal Information
+---
 
-You do **not** need to edit the source code to update your profile. 
+## 👤 Customizing Personal Information
 
-1. Click the extension icon.
-2. Click **Settings** → **Profile** tab.
-3. Paste your profile as JSON (use `config/personals.example.json` as a template).
-4. Click **Save Settings**.
+You do **not** need to edit the source code to update your profile.
+
+1. Click the extension icon → **Settings** → **Profile** tab.
+2. Paste your profile as JSON (use `config/personals.example.json` as a template).
+3. Click **Save Settings**.
 
 ## Troubleshooting
 
