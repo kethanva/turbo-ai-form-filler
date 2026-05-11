@@ -1,6 +1,6 @@
 # Code Review & Re-Architecture Report
 
-**Project:** turbo-ai-form-filler (Chrome Extension, Manifest V3)
+**Project:** form-autopilot (Chrome Extension, Manifest V3)
 **Path:** `/Volumes/SSD/projects/AI_JOBS/chrome_forms_auto_update/extension`
 **Review date:** 2026-04-24
 **Scope:** Full codebase review (4,274 lines across `src/` and `src/modules/`)
@@ -380,10 +380,10 @@ Suggested commit breakdown (not yet committed):
 
 ```
 $ npm run build
-> turbo-ai-form-filler@1.0.0 build
+> form-autopilot@1.0.0 build
 > tsc && npm run bundle
 
-> turbo-ai-form-filler@1.0.0 bundle
+> form-autopilot@1.0.0 bundle
 > npx esbuild dist/content.js --bundle ... dist/popup.js ... dist/options.js ...
 
   dist/content.bundle.js  117.9kb    ⚡ Done in 9ms

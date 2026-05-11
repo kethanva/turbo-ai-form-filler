@@ -1,6 +1,6 @@
-# Contributing to turbo-ai-form-filler
+# Contributing to form-autopilot
 
-First off, thank you for considering contributing to turbo-ai-form-filler! It's people like you that make this tool better for everyone.
+First off, thank you for considering contributing to form-autopilot! It's people like you that make this tool better for everyone.
 
 ## Code of Conduct
 
@@ -33,8 +33,8 @@ By participating in this project, you are expected to uphold our Code of Conduct
 ## Development Setup
 
 ```bash
-git clone https://github.com/kethanva/turbo-ai-form-filler.git
-cd turbo-ai-form-filler
+git clone https://github.com/kethanva/form-autopilot.git
+cd form-autopilot
 npm install
 npm run build
 ```
