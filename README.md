@@ -17,6 +17,7 @@
 - **🧠 AI-Powered**: Uses advanced LLMs (Groq, HuggingFace etc) to understand context and map your profile to questions.
 - **🛡️ Privacy First**: Your data stays in your browser. API keys are stored locally. No tracking.
 - **🌍 Universal Support**: Works on LinkedIn, Workday, Greenhouse, Lever, Ashby, iCIMS, and generic HTML forms.
+- **💰 Cost Effective**: Optimized for Groq's generous free tier — fill thousands of forms without spending a dime.
 
 ---
 
@@ -66,8 +67,8 @@ npm run build
 
 ### 1. Configure API Keys
 Click the extension icon → **Settings** → **API Keys**.
-- **Groq** (Recommended): [Get a free key here](https://console.groq.com/keys).
-- **HuggingFace**: [Get a key here](https://huggingface.co/settings/tokens).
+- **Groq** (Recommended): [Get a free key here](https://console.groq.com/keys). **Extremely fast and currently offers a generous free tier.**
+- **HuggingFace**: [Get a key here](https://huggingface.co/settings/tokens). Also free for most inference tasks.
 
 ### 2. Personalize Your Profile
 Settings → **Profile**. Paste your details as JSON. You can find a template in `config/personals.example.json`.
