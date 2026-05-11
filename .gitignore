@@ -1,0 +1,25 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+CHROME_DATA/
+
+# Secrets and personal data - DO NOT COMMIT
+config/secrets.json
+config/personals.json
+
+# Build artifacts
+*.zip
+release/
+
+# Editor / local tooling
+.vscode/
+.idea/
+.claude/
+
+# Scratch/temp files
+scratch.js
+scratch.ts
+
+# Source maps (expose internal structure)
+dist/**/*.map

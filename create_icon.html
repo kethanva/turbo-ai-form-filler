@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Icon Generator</title>
+</head>
+<body>
+  <canvas id="iconCanvas" width="128" height="128"></canvas>
+  <script>
+    const canvas = document.getElementById('iconCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Background gradient
+    const gradient = ctx.createLinearGradient(0, 0, 128, 128);
+    gradient.addColorStop(0, '#1976d2');
+    gradient.addColorStop(1, '#1565c0');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 128, 128);
+    
+    // Draw form/document icon
+    ctx.fillStyle = 'white';
+    ctx.fillRect(20, 15, 88, 98);
+    
+    // Draw form lines
+    ctx.strokeStyle = '#1976d2';
+    ctx.lineWidth = 2;
+    
+    // Horizontal lines
+    for (let i = 0; i < 5; i++) {
+      ctx.beginPath();
+      ctx.moveTo(30, 30 + i * 18);
+      ctx.lineTo(98, 30 + i * 18);
+      ctx.stroke();
+    }
+    
+    // Draw checkbox
+    ctx.strokeStyle = '#4caf50';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.rect(30, 95, 15, 15);
+    ctx.stroke();
+    
+    // Draw checkmark
+    ctx.beginPath();
+    ctx.moveTo(33, 102);
+    ctx.lineTo(38, 107);
+    ctx.lineTo(43, 98);
+    ctx.stroke();
+    
+    // Draw AI sparkle
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.arc(100, 25, 8, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Convert to data URL and download
+    const sizes = [16, 48, 128];
+    sizes.forEach(size => {
+      const newCanvas = document.createElement('canvas');
+      newCanvas.width = size;
+      newCanvas.height = size;
+      const newCtx = newCanvas.getContext('2d');
+      newCtx.drawImage(canvas, 0, 0, size, size);
+      
+      const link = document.createElement('a');
+      link.download = `icon${size}.png`;
+      link.href = newCanvas.toDataURL();
+      link.click();
+    });
+  </script>
+</body>
+</html>
+
