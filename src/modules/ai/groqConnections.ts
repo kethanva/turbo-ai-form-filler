@@ -10,7 +10,6 @@ export interface GroqClient {
 
 export function groqCreateClient(secrets: Secrets): GroqClient | null {
   try {
-    printLog("Creating Groq client...");
 
     if (!secrets.use_AI) {
       throw new Error("AI is not enabled! Please enable it by setting use_AI = true in secrets");
@@ -28,9 +27,7 @@ export function groqCreateClient(secrets: Secrets): GroqClient | null {
       );
     }
 
-    printLog("---- SUCCESSFULLY CREATED GROQ CLIENT! ----");
-    // printLog(`Using API URL: ${apiUrl}`);
-    // printLog(`Using Model: ${modelName}`);
+    printLog(`✓ Groq client ready (${modelName})`);
 
     return {
       token: groqToken.trim(),

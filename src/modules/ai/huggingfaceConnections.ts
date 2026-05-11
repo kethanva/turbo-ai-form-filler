@@ -10,7 +10,6 @@ export interface HuggingFaceClient {
 
 export function huggingfaceCreateClient(secrets: Secrets): HuggingFaceClient | null {
   try {
-    printLog("Creating HuggingFace client...");
 
     if (!secrets.use_AI) {
       throw new Error("AI is not enabled! Please enable it by setting use_AI = true in secrets");
@@ -27,9 +26,7 @@ export function huggingfaceCreateClient(secrets: Secrets): HuggingFaceClient | n
       );
     }
 
-    printLog("---- SUCCESSFULLY CREATED HUGGINGFACE CLIENT! ----");
-    //printLog(`Using API URL: ${apiUrl}`);
-    //printLog(`Using Model: ${modelName}`);
+    printLog(`✓ HuggingFace client ready (${modelName})`);
 
     return {
       token: hfToken.trim(),
