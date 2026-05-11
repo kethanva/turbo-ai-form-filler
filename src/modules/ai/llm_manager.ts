@@ -47,7 +47,6 @@ export class LLMManager {
   }
 
   async initializeClients(secrets: Secrets): Promise<void> {
-    printLog("Initializing LLM Clients...");
 
     try {
       this.clients.groq = groqCreateClient(secrets);
@@ -415,7 +414,6 @@ Questions:
         const client = this.clients[provider as keyof LLMClients];
         if (!client) continue;
 
-        printLog(`Batch request: trying ${provider} for ${questionsList.length} questions...`);
 
         if (provider === "groq") {
           const response = await fetch((client as GroqClient).api_url, {
