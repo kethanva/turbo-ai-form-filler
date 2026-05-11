@@ -4,7 +4,7 @@
 
 > **AI-powered Chrome extension that eliminates the manual effort of filling job application forms — press one shortcut and let the AI handle the rest.**
 
-[![CI](https://github.com/kethanva/form-autopilot/actions/workflows/ci.yml/badge.svg)](https://github.com/kethanva/form-autopilot/actions/workflows/ci.yml)
+[![CI](https://github.com/kethanva/turbo-ai-form-filler/actions/workflows/ci.yml/badge.svg)](https://github.com/kethanva/turbo-ai-form-filler/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Manifest V3](https://img.shields.io/badge/Manifest-V3-blue)](manifest.json)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -92,8 +92,8 @@ Popup shows filled count. Review, adjust if needed, and submit.
 ### Option 1: Run the Setup Script (Recommended)
 
 ```bash
-git clone https://github.com/kethanva/form-autopilot.git
-cd form-autopilot
+git clone https://github.com/kethanva/turbo-ai-form-filler.git
+cd turbo-ai-form-filler
 ./setup.sh        # macOS / Linux
 # setup.bat       # Windows
 ```
@@ -101,7 +101,7 @@ cd form-autopilot
 This handles everything: creates your local config files, installs dependencies, and builds the extension. Then load it in Chrome:
 - Open `chrome://extensions`
 - Enable **Developer mode** (top-right toggle)
-- Click **Load unpacked** → select the `form-autopilot` folder
+- Click **Load unpacked** → select the `turbo-ai-form-filler` folder
 
 ### Option 2: Download a Release
 
@@ -222,6 +222,9 @@ This extension was designed with a privacy-first approach:
 - API keys are stored in `chrome.storage.sync` (synced across your signed-in Chrome instances, never exposed to page scripts).
 - The only data sent externally is the form field labels + your profile, sent to the LLM provider you configure.
 - No telemetry, no crash reporting, no usage tracking of any kind.
+
+> [!WARNING]
+> **Sensitive fields in your profile are sent to third-party LLM APIs.** When you populate fields such as `date_of_birth`, `gender`, `sexual_orientation`, `physical_disability`, or `mental_disability`, that data is transmitted to the AI provider you configured (Groq or HuggingFace) so the extension can answer EEO and compliance questions. Only include fields you are comfortable sharing with those providers. These fields are entirely optional — leave them empty or omit them to skip EEO questions.
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 

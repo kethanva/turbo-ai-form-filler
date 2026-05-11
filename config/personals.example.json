@@ -47,5 +47,17 @@
         "React",
         "Node.js"
     ],
-    "user_information_all": "I am a software engineer with 5 years of experience..."
+    "user_information_all": "I am a software engineer with 5 years of experience...",
+
+    "_WARNING_sensitive_fields": "The fields below are OPTIONAL. They may be sent to third-party LLM APIs (Groq, HuggingFace) when answering EEO or compliance questions. Only populate fields you are comfortable sharing with external AI providers. Leave as empty string or omit to skip.",
+    "date_of_birth": "",
+    "gender": "",
+    "gender_identity": "",
+    "sexual_orientation": "",
+    "physical_disability": false,
+    "mental_disability": false,
+    "neuro_diverse": false,
+    "veteran_status": "No",
+    "citizen_of_usa": false,
+    "require_visa": "No"
 }

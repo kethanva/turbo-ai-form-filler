@@ -33,8 +33,8 @@ By participating in this project, you are expected to uphold our Code of Conduct
 ## Development Setup
 
 ```bash
-git clone https://github.com/kethanva/form-autopilot.git
-cd form-autopilot
+git clone https://github.com/kethanva/turbo-ai-form-filler.git
+cd turbo-ai-form-filler
 npm install
 npm run build
 ```
