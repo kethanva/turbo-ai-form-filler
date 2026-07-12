@@ -34,7 +34,7 @@
         "dist/content.bundle.js"
       ],
       "run_at": "document_idle",
-      "all_frames": true
+      "all_frames": false
     }
   ],
   "action": {
@@ -50,17 +50,5 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-  "options_page": "options.html",
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "config/personals.json",
-        "config/questions.json",
-        "config/secrets.json"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
-    }
-  ]
+  "options_page": "options.html"
 }

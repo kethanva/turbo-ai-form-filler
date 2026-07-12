@@ -13,17 +13,21 @@ class FuzzyMatcher {
   }
 
   private ensureDataLoaded(): void {
-    // Load data from cached personals (preloaded in content.ts)
-    if (Object.keys(this.data).length === 0) {
-      const personals = getPersonalsSync();
-      if (personals) {
-        for (const key in personals) {
-          if (personals.hasOwnProperty(key)) {
-            const value = (personals as any)[key];
-            if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || Array.isArray(value)) {
-              this.data[key] = value;
-            }
-          }
+    // Always rebuild from current personals cache so profile edits apply immediately.
+    const personals = getPersonalsSync();
+    this.data = {};
+    if (!personals) return;
+
+    for (const key in personals) {
+      if (Object.prototype.hasOwnProperty.call(personals, key)) {
+        const value = (personals as any)[key];
+        if (
+          typeof value === 'string' ||
+          typeof value === 'number' ||
+          typeof value === 'boolean' ||
+          Array.isArray(value)
+        ) {
+          this.data[key] = value;
         }
       }
     }

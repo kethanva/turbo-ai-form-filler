@@ -55,11 +55,22 @@ class FormFiller {
 
     this.isRunning = true;
     this.filledCount = 0;
+    this.emitStatus();
 
     try {
+      // Wait briefly for form to fully render (handles dynamic/lazy-loaded fields)
+      await sleep(500);
+
       // Detect elements first — bail silently for iframes and pages with no forms.
       // This avoids initializing LLM clients on pages that have nothing to fill.
-      const formElements = this.findFormElements();
+      let formElements = this.findFormElements();
+
+      // Retry once if no elements found (form may still be rendering)
+      if (formElements.length === 0) {
+        await sleep(1000);
+        formElements = this.findFormElements();
+      }
+
       if (formElements.length === 0) {
         return 0;
       }
@@ -106,14 +117,13 @@ class FormFiller {
 
           // 3. Fill elements in this chunk (SEQUENTIAL to prevent UI interference)
           // We must fill sequentially because opening a dropdown often closes others
-          // Use pre-computed enhanced questions from questionsList to ensure consistency
+          // Answers are keyed by chunk-local index to avoid duplicate-label collisions
           for (let j = 0; j < chunk.length; j++) {
             const formElement = chunk[j];
-            const enhancedQuestion = questionsList[j].question; // Use same question from batch request
             try {
-              const cachedAnswer = batchAnswers.get(enhancedQuestion);
+              const cachedAnswer = batchAnswers.get(j);
               if (!cachedAnswer) {
-                printLog(`⚠️ No cached answer for: ${enhancedQuestion.substring(0, 60)}...`);
+                printLog(`⚠️ No cached answer for: ${questionsList[j].question.substring(0, 60)}...`);
               }
               await this.fillElementWithAnswer(formElement, cachedAnswer);
 
@@ -161,6 +171,22 @@ class FormFiller {
       return this.filledCount;
     } finally {
       this.isRunning = false;
+      this.emitStatus();
+    }
+  }
+
+  private emitStatus(): void {
+    try {
+      chrome.runtime.sendMessage({
+        action: 'fillStatus',
+        isRunning: this.isRunning,
+        filledCount: this.filledCount,
+      }, () => {
+        // Swallow "Receiving end does not exist" when popup is closed
+        void chrome.runtime.lastError;
+      });
+    } catch {
+      // Extension context unavailable
     }
   }
 
@@ -310,15 +336,31 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     //    Ideally scoped, but shadow hosts usually live in the light DOM of the modal.
     const shadowInputs: Element[] = [];
 
+    // Recursive helper to find all elements in shadow DOM (handles nested shadow hosts)
+    const collectFromShadowDOM = (container: Element | ShadowRoot) => {
+      const formElementSelector = 'input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget, spl-input, spl-textarea, spl-select, spl-autocomplete, spl-phone-field, spl-checkbox, spl-radio-group';
+
+      // Find direct form elements in current shadow
+      const found = container.querySelectorAll(formElementSelector);
+      shadowInputs.push(...Array.from(found));
+
+      // Find all shadow hosts in current level and recurse
+      const allElements = container.querySelectorAll('*');
+      allElements.forEach(el => {
+        if (el.shadowRoot) {
+          collectFromShadowDOM(el.shadowRoot);
+        }
+      });
+    };
+
     // Note: older logic querySelectorAll on document. If root is an element, we query on it.
     // However, root could be 'Document'. querySelectorAll works on both.
     const shadowHosts = root.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
 
     shadowHosts.forEach(host => {
       if (host.shadowRoot) {
-        const found = host.shadowRoot.querySelectorAll(formElementSelector);
-        shadowInputs.push(...Array.from(found));
-        printLog(`Found ${found.length} elements in Shadow DOM of ${host.tagName}`);
+        collectFromShadowDOM(host.shadowRoot);
+        printLog(`Recursively scanned Shadow DOM of ${host.tagName}`);
       }
     });
 
@@ -676,6 +718,30 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       if (!question) {
         question = element.textContent?.trim() || '';
       }
+
+      // Special handling for sr-screening-questions-form fields:
+      // Look for label in preceding sibling or wrapper
+      if (!question) {
+        const parentWrapper = element.closest('.sr-form-field, .form-field, .field-wrapper, [class*="question"]');
+        if (parentWrapper) {
+          // Look for label in the wrapper
+          const label = parentWrapper.querySelector('label, .label, [class*="label"], .field-label');
+          if (label) {
+            question = this.getCleanLabelText(label);
+          }
+        }
+        // Also check for previous label sibling
+        if (!question) {
+          let prev = element.previousElementSibling;
+          while (prev && !question) {
+            if (prev.tagName === 'LABEL' || prev.classList.contains('label') || prev.classList.contains('field-label')) {
+              question = this.getCleanLabelText(prev);
+              break;
+            }
+            prev = prev.previousElementSibling;
+          }
+        }
+      }
     }
 
     // Don't return early here - we need to continue to add entry context at the end
@@ -703,7 +769,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
     // Check for id and associated label
     if (!question && element.id) {
-      const label = document.querySelector(`label[for="${element.id}"]`);
+      const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
       if (label) {
         question = this.getCleanLabelText(label);
       }
@@ -1170,7 +1236,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     } else if (element.getAttribute('type') === 'radio' || element.getAttribute('type') === 'checkbox') {
       const name = element.getAttribute('name');
       if (name) {
-        const radioButtons = document.querySelectorAll<HTMLInputElement>(`input[type="${element.getAttribute('type')}"][name="${name}"]`);
+        const radioButtons = document.querySelectorAll<HTMLInputElement>(`input[type="${CSS.escape(element.getAttribute('type') || '')}"][name="${CSS.escape(name)}"]`);
         radioButtons.forEach(radio => {
           const label = this.findLabelForElement(radio);
           if (label) {
@@ -1228,7 +1294,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
   private findLabelForElement(element: HTMLElement): string | null {
     if (element.id) {
-      const label = document.querySelector(`label[for="${element.id}"]`);
+      const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
       if (label) {
         return this.getCleanLabelText(label) || null;
       }
@@ -1242,9 +1308,26 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     return null;
   }
 
+  /** Skip Workday endDate when the entry has "currently work here" checked. */
+  private shouldSkipWorkdayEndDate(element: HTMLElement): boolean {
+    const elemId = element.id || '';
+    if (!elemId.includes('--endDate')) return false;
+    const entryPrefix = elemId.split('--')[0];
+    const cwh = document.getElementById(`${entryPrefix}--currentlyWorkHere`) as HTMLInputElement | null;
+    if (cwh?.checked) {
+      printLog(`⏭ Skipping endDate for ${entryPrefix} (currently work here)`);
+      return true;
+    }
+    return false;
+  }
+
   private async fillElement(formElement: FormElement): Promise<void> {
     try {
       const { element, type, question, options } = formElement;
+
+      if (this.shouldSkipWorkdayEndDate(element)) {
+        return;
+      }
 
       printLog(`Filling element: ${question || 'Unknown field'
         }`);
@@ -1281,6 +1364,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   private async fillElementWithAnswer(formElement: FormElement, cachedAnswer?: string): Promise<void> {
     try {
       const { element, type, question, options } = formElement;
+
+      // Skip Workday endDate fields whose entry has "currently work here" checked.
+      if (this.shouldSkipWorkdayEndDate(element)) {
+        return;
+      }
 
       let answer = cachedAnswer;
 
@@ -1449,7 +1537,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
               if (monthInput && yearInput) {
                 // If we have extracted both month and year (from full date), set both
-                if (month !== null && year !== null) {
+                // BUT only if we are on the Month field. If we are on the Year field, 
+                // setting both could overwrite a correctly filled month with a default value.
+                if (month !== null && year !== null && ariaLabel !== 'Year') {
                   setSpinValue(monthInput, month);
                   setSpinValue(yearInput, year);
                   printLog(`✓ Set Workday date spinbuttons (Sync): Month=${month}, Year=${year}`);
@@ -1791,7 +1881,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         printLog(`Radio: looking for "${value}" in options: ${JSON.stringify(options)} `);
         const name = input.getAttribute('name');
         if (name) {
-          const radios = document.querySelectorAll<HTMLInputElement>(`input[type = "radio"][name = "${name}"]`);
+          const radios = document.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${CSS.escape(name)}"]`);
           const valLowerRadio = value.toLowerCase().trim();
 
           let foundRadio = false;
@@ -2323,6 +2413,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   private parseDateToISO(value: string): string | null {
     const trimmed = value.trim();
 
+    // Prevent pure numbers (e.g., "2022" or "3") from being parsed as full dates
+    // Native Date("2022") evaluates to Jan 1, 2022, which incorrectly overwrites the month
+    if (/^\d+$/.test(trimmed)) {
+      return null;
+    }
+
     // Try common formats
     const datePatterns = [
       // yyyy-mm-dd (already ISO)
@@ -2377,7 +2473,28 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   }
 
   hasFormElements(): boolean {
-    return this.findFormElements().length > 0;
+    const formElementSelector = 'input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget, spl-input, spl-textarea, spl-select, spl-autocomplete, spl-phone-field, spl-checkbox, spl-radio-group';
+    if (document.querySelector(formElementSelector)) {
+      return true;
+    }
+
+    // Match findFormElements(): recursively walk nested shadow trees
+    const hasInShadow = (container: Element | ShadowRoot): boolean => {
+      if (container.querySelector(formElementSelector)) return true;
+      const all = container.querySelectorAll('*');
+      for (const el of Array.from(all)) {
+        if (el.shadowRoot && hasInShadow(el.shadowRoot)) return true;
+      }
+      return false;
+    };
+
+    const shadowHosts = document.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
+    for (const host of Array.from(shadowHosts)) {
+      if (host.shadowRoot && hasInShadow(host.shadowRoot)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private delay(ms: number): Promise<void> {
@@ -2385,39 +2502,43 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   }
 }
 
-// Initialize form filler
+// Safe under dynamic re-injection: always refresh globals from this bundle so
+// extension reloads/updates replace stale handlers. Bind the message listener once.
+const __w = window as any;
 const formFiller = new FormFiller();
-
-// Listen for messages from popup
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Only respond if we are the top frame OR we have elements to fill
-  // This prevents empty iframes (like tracking pixels or ads) from hijacking the response
-  const isTopFrame = window.self === window.top;
-  const hasElements = formFiller.hasFormElements();
-  
-  if (!isTopFrame && !hasElements) {
-    return false; // Don't handle this message, let other frames (like the main one) respond
-  }
-
-  if (message.action === 'startFilling') {
-    formFiller.startFilling().then((filled) => {
-      sendResponse({ success: true, filledCount: filled });
-    }).catch((error) => {
-      sendResponse({ success: false, error: String(error) });
-    });
-    return true; // Keep channel open for async response
-  }
-
-  if (message.action === 'getStatus') {
-    sendResponse(formFiller.getStatus());
-    return true;
-  }
-});
-
-// Also expose a global function for manual triggering
-(window as any).startFormFilling = () => {
-  formFiller.startFilling();
+__w.__formAutopilotFormFiller = formFiller;
+__w.startFormFilling = () => {
+  void (__w.__formAutopilotFormFiller as FormFiller).startFilling();
 };
+__w.startFormFillingAsync = () => (__w.__formAutopilotFormFiller as FormFiller).startFilling();
+__w.getFormFillerStatus = () => (__w.__formAutopilotFormFiller as FormFiller).getStatus();
+
+if (!__w.__formAutopilotListenerBound) {
+  __w.__formAutopilotListenerBound = true;
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    const filler = __w.__formAutopilotFormFiller as FormFiller | undefined;
+    if (!filler) return false;
+
+    const isTopFrame = window.self === window.top;
+    if (!isTopFrame && !filler.hasFormElements()) {
+      return false;
+    }
+
+    if (message.action === 'startFilling') {
+      filler.startFilling().then((filled) => {
+        sendResponse({ success: true, filledCount: filled });
+      }).catch((error) => {
+        sendResponse({ success: false, error: String(error) });
+      });
+      return true;
+    }
+
+    if (message.action === 'getStatus') {
+      sendResponse(filler.getStatus());
+      return true;
+    }
+  });
+}
 
 if (window.self === window.top) {
   printLog('Form filler content script loaded');

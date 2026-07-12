@@ -3,7 +3,7 @@ import { Secrets, loadSecrets, loadPersonals, getPersonalsSync } from '../config
 import { groqCreateClient, groqAnswerQuestion, groqExtractSkills, GroqClient } from './groqConnections.js';
 import { huggingfaceCreateClient, huggingfaceAnswerQuestion, huggingfaceExtractSkills, HuggingFaceClient } from './huggingfaceConnections.js';
 import { fuzzyAnswerQuestion, fuzzyExtractSkills } from '../fuzzy_matcher.js';
-import { printLog } from '../helpers.js';
+import { printLog, proxyFetch } from '../helpers.js';
 
 interface LLMClients {
   groq: GroqClient | null;
@@ -29,19 +29,22 @@ export class LLMManager {
   }
 
   /**
-   * Removes duplicate items from comma-separated responses (fixes LLM repetition loop)
+   * Removes duplicate items from comma-separated multi-select answers only.
+   * Never rewrite free-text sentences that happen to contain commas.
    */
-  private deduplicateResponse(answer: string): string {
-    // Check if it looks like a comma-separated list
-    if (answer.includes(',')) {
-      const items = answer.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  private deduplicateResponse(answer: string, questionType: string): string {
+    if (questionType !== 'multiple_select' && questionType !== 'checkbox') {
+      return answer;
+    }
+    if (!answer.includes(',')) {
+      return answer;
+    }
 
-      // Only deduplicate if there are duplicates
-      const uniqueItems = [...new Set(items)];
-      if (uniqueItems.length < items.length) {
-        printLog(`🔧 Deduplicated response: ${items.length} items → ${uniqueItems.length} unique items`);
-        return uniqueItems.join(', ');
-      }
+    const items = answer.split(',').map(s => s.trim()).filter(s => s.length > 0);
+    const uniqueItems = [...new Set(items)];
+    if (uniqueItems.length < items.length) {
+      printLog(`🔧 Deduplicated multi-select: ${items.length} items → ${uniqueItems.length} unique items`);
+      return uniqueItems.join(', ');
     }
     return answer;
   }
@@ -171,10 +174,8 @@ ${JSON.stringify(personalsData)}
             continue;
           }
 
-          // Deduplicate comma-separated lists (fixes LLM repetition loop issue)
-          let cleanedAnswer = this.deduplicateResponse(answer);
-
-          //printLog(`✅ LLM Successfully answered with ${provider}: ${cleanedAnswer.substring(0, 100)}...`);
+          // Deduplicate only multi-select / checkbox list answers
+          const cleanedAnswer = this.deduplicateResponse(answer, questionType);
           return cleanedAnswer;
         } else {
           if (answer === null) {
@@ -220,14 +221,15 @@ ${JSON.stringify(personalsData)}
     return null;
   }
 
-  // Batch answer multiple questions in a single LLM call for speed
+  // Batch answer multiple questions in a single LLM call for speed.
+  // Returns answers keyed by question index to avoid collisions on duplicate labels.
   async getBatchAnswers(
     questionsList: { question: string; options?: string[]; questionType?: string }[],
     jobDescription?: string,
     userInformationAll?: string,
     configContext?: string
-  ): Promise<Map<string, string>> {
-    const results = new Map<string, string>();
+  ): Promise<Map<number, string>> {
+    const results = new Map<number, string>();
 
     if (questionsList.length === 0) return results;
 
@@ -332,28 +334,12 @@ JavaScript arrays start at index 0. To find the correct entry:
 
 10. **IF [Entry: X] is missing**: Return "N/A"
 
+**CRITICAL INDEXING REMINDER:**
+- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
+- DO NOT return the entry number literally — look up the actual value in the array.
+
 === General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
-`;
-
-    // Inject the USER'S actual structured data (from their profile) for [Entry: X] questions.
-    // Never hardcode — the earlier experienceData / educationData come straight from personalsData.
-    batchPrompt += `
-
-=== STRUCTURED DATA FOR REPEATING SECTIONS ===
-
-**EXPERIENCE_DETAILS** (use for Work Experience questions):
-${experienceData}
-
-**EDUCATION_DETAILS** (use for Education questions):
-${educationData}
-
-**CRITICAL INDEXING INSTRUCTIONS:**
-- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
-- "Company [Entry: 2]" -> experience_details[1].companyKey
-- "School [Entry: 1]" -> education_details[0].institution
-- DO NOT return the entry number literally — look up the actual value in the array.
-- If the requested index does not exist in the array, return "N/A".
 `;
 
     batchPrompt += `
@@ -393,7 +379,7 @@ Questions:
           const idx = parseInt(match[1]) - 1;
           const answer = match[2].trim();
           if (idx >= 0 && idx < questionsList.length && answer.length > 0) {
-            results.set(questionsList[idx].question, answer);
+            results.set(idx, answer);
             matchedIndices.add(idx);
           }
         }
@@ -420,7 +406,7 @@ Questions:
 
 
         if (provider === "groq") {
-          const response = await fetch((client as GroqClient).api_url, {
+          const response = await proxyFetch((client as GroqClient).api_url, {
             method: 'POST',
             headers: {
               "Authorization": `Bearer ${(client as GroqClient).token}`,
@@ -452,7 +438,7 @@ Questions:
           }
         } else if (provider === "huggingface") {
           const hfClient = client as HuggingFaceClient;
-          const response = await fetch(hfClient.api_url, {
+          const response = await proxyFetch(hfClient.api_url, {
             method: 'POST',
             headers: {
               "Authorization": `Bearer ${hfClient.token}`,

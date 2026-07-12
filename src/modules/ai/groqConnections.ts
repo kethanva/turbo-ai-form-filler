@@ -1,6 +1,6 @@
 // Converted from modules/ai/connections/groqConnections.py
 import { Secrets, loadQuestions, getQuestionsSync } from '../config_loader.js';
-import { printLog, criticalErrorLog } from '../helpers.js';
+import { printLog, criticalErrorLog, proxyFetch } from '../helpers.js';
 
 export interface GroqClient {
   token: string;
@@ -99,7 +99,7 @@ export async function groqAnswerQuestion(
     };
 
     // Make API request
-    const response = await fetch(client.api_url, {
+    const response = await proxyFetch(client.api_url, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(payload)
@@ -167,7 +167,7 @@ export async function groqExtractSkills(
       response_format: { type: "json_object" }
     };
 
-    const response = await fetch(client.api_url, {
+    const response = await proxyFetch(client.api_url, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(payload)
