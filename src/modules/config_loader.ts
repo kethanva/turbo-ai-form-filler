@@ -81,10 +81,16 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
 
 /**
  * Load a JSON config file from the extension's config directory (extension context only).
- * Not exposed to web pages — web_accessible_resources must remain unset for these files.
+ * Safe without web_accessible_resources — only extension pages/content scripts can fetch this.
  */
 async function loadJsonConfig<T>(filename: string): Promise<T> {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.id) {
+        throw new Error('Extension context invalidated — refresh the page and try again');
+    }
     const url = chrome.runtime.getURL(`config/${filename}`);
+    if (!url || url.startsWith('chrome-extension://invalid')) {
+        throw new Error('Extension context invalidated — refresh the page and try again');
+    }
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to load config: ${filename}`);
@@ -107,7 +113,9 @@ function normalizeQuestions(raw: {
 }
 
 /**
- * Load secrets — chrome.storage.sync first, then bundled defaults (keys never trusted from disk).
+ * Load secrets — chrome.storage.sync overlays bundled config/secrets.json.
+ * Reading secrets.json via getURL is safe for extension contexts when WAR is unset.
+ * Web pages cannot fetch it; only this extension can.
  */
 export async function loadSecrets(): Promise<Secrets> {
     if (secretsCache) {
@@ -117,15 +125,17 @@ export async function loadSecrets(): Promise<Secrets> {
     let bundled: Secrets | null = null;
     try {
         bundled = await loadJsonConfig<Secrets>('secrets.json');
-    } catch {
+    } catch (e) {
+        printQuietConfigError('secrets.json', e);
         try {
             bundled = await loadJsonConfig<Secrets>('secrets.example.json');
-        } catch {
+        } catch (e2) {
+            printQuietConfigError('secrets.example.json', e2);
             bundled = null;
         }
     }
 
-    const defaults: Secrets = bundled || {
+    const base: Secrets = bundled || {
         use_AI: true,
         groq_api_key: '',
         groq_model: 'llama-3.1-8b-instant',
@@ -135,40 +145,57 @@ export async function loadSecrets(): Promise<Secrets> {
         huggingface_api_url: 'https://router.huggingface.co/v1/chat/completions',
     };
 
-    // Never keep API keys from bundled files — only models/URLs/flags.
-    const base: Secrets = {
-        ...defaults,
-        groq_api_key: '',
-        huggingface_api_key: '',
-    };
-
     const result = await new Promise<Secrets>((resolve) => {
-        chrome.storage.sync.get(['secrets'], (storedResult) => {
-            if (storedResult.secrets) {
-                const stored = storedResult.secrets;
-                const merged = { ...base };
-
-                if (stored.groq_api_key && stored.groq_api_key.trim().length > 8) {
-                    merged.groq_api_key = stored.groq_api_key;
+        try {
+            chrome.storage.sync.get(['secrets'], (storedResult) => {
+                if (chrome.runtime.lastError) {
+                    resolve(base);
+                    return;
                 }
-                if (stored.huggingface_api_key && stored.huggingface_api_key.trim().length > 8) {
-                    merged.huggingface_api_key = stored.huggingface_api_key;
-                }
-                if (stored.use_AI !== undefined) merged.use_AI = stored.use_AI;
-                if (stored.groq_model) merged.groq_model = stored.groq_model;
-                if (stored.groq_api_url) merged.groq_api_url = stored.groq_api_url;
-                if (stored.huggingface_model) merged.huggingface_model = stored.huggingface_model;
-                if (stored.huggingface_api_url) merged.huggingface_api_url = stored.huggingface_api_url;
+                if (storedResult.secrets) {
+                    const stored = storedResult.secrets;
+                    const merged = { ...base };
 
-                resolve(merged);
-            } else {
-                resolve(base);
-            }
-        });
+                    // Storage wins when a real key is present (Options page).
+                    if (stored.groq_api_key && stored.groq_api_key.trim().length > 8) {
+                        merged.groq_api_key = stored.groq_api_key;
+                    }
+                    if (stored.huggingface_api_key && stored.huggingface_api_key.trim().length > 8) {
+                        merged.huggingface_api_key = stored.huggingface_api_key;
+                    }
+                    if (stored.use_AI !== undefined) merged.use_AI = stored.use_AI;
+                    if (stored.groq_model) merged.groq_model = stored.groq_model;
+                    if (stored.groq_api_url) merged.groq_api_url = stored.groq_api_url;
+                    if (stored.huggingface_model) merged.huggingface_model = stored.huggingface_model;
+                    if (stored.huggingface_api_url) merged.huggingface_api_url = stored.huggingface_api_url;
+
+                    resolve(merged);
+                } else {
+                    resolve(base);
+                }
+            });
+        } catch {
+            resolve(base);
+        }
     });
 
     secretsCache = result;
     return result;
+}
+
+function printQuietConfigError(name: string, err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Avoid noisy stack traces for expected missing/invalid-context cases
+    if (typeof console !== 'undefined') {
+        console.warn(`[form-autopilot] Could not load config/${name}: ${msg}`);
+    }
+}
+
+/** True when at least one LLM provider key is configured. */
+export function hasConfiguredApiKeys(secrets: Secrets): boolean {
+    const groq = (secrets.groq_api_key || '').trim();
+    const hf = (secrets.huggingface_api_key || '').trim();
+    return groq.length > 8 || hf.length > 8;
 }
 
 /**

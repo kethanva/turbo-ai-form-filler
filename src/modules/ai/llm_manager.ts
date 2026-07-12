@@ -205,12 +205,17 @@ ${JSON.stringify(personalsData)}
     }
 
     // If all providers failed
+    const anyClientConfigured = !!(this.clients.groq || this.clients.huggingface);
     printLog("All LLM providers failed. Trying Fuzzy Logic.");
     const fuzzyAns = this.fuzzyAnswer(question, options, jobDescription);
 
-    // Activate Cooldown (2 minutes)
-    printLog("Activating 2 minute cooldown for LLMs.");
-    this.cooldownEndTime = new Date(Date.now() + 2 * 60 * 1000);
+    // Only cooldown on real provider failures (rate limits / outages), not missing API keys.
+    if (anyClientConfigured) {
+      printLog("Activating 2 minute cooldown for LLMs.");
+      this.cooldownEndTime = new Date(Date.now() + 2 * 60 * 1000);
+    } else {
+      printLog("Skipping LLM cooldown — no API clients configured. Add keys in Options.");
+    }
     this.currentFallbackIndex = 0;
 
     if (fuzzyAns && typeof fuzzyAns === 'string' && fuzzyAns.trim().length > 0) {

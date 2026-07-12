@@ -36,7 +36,6 @@ async function loadBundledJson<T>(relativePath: string): Promise<T | null> {
  */
 async function seedDefaultConfigs(): Promise<void> {
   const local = await chrome.storage.local.get(['personals', 'questions']);
-  const sync = await chrome.storage.sync.get(['secrets']);
 
   const updatesLocal: Record<string, unknown> = {};
   if (!local.personals) {
@@ -53,20 +52,9 @@ async function seedDefaultConfigs(): Promise<void> {
     await chrome.storage.local.set(updatesLocal);
   }
 
-  if (!sync.secrets) {
-    const secrets =
-      (await loadBundledJson('config/secrets.json')) ||
-      (await loadBundledJson('config/secrets.example.json'));
-    if (secrets) {
-      // Never seed real keys from disk into sync — only structure/defaults.
-      const safeSecrets = {
-        ...secrets as object,
-        groq_api_key: '',
-        huggingface_api_key: '',
-      };
-      await chrome.storage.sync.set({ secrets: safeSecrets });
-    }
-  }
+  // Do not seed secrets into sync here. Keys come from Options (sync) and/or
+  // config/secrets.json via getURL. Seeding empty sync secrets caused "no key" failures
+  // after we scrubbed the local secrets file.
 }
 
 async function injectContentScripts(tabId: number): Promise<void> {

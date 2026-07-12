@@ -1,6 +1,6 @@
 // Content script for form filling
 import { llmManager } from './modules/ai/llm_manager.js';
-import { loadSecrets, loadPersonals, getPersonalsSync, Personals } from './modules/config_loader.js';
+import { loadSecrets, loadPersonals, getPersonalsSync, hasConfiguredApiKeys, Personals } from './modules/config_loader.js';
 import { printLog } from './modules/helpers.js';
 
 // Cached personals (loaded async at start)
@@ -80,6 +80,12 @@ class FormFiller {
       // Load configs and initialize LLM now that we know there is work to do
       const secrets = await loadSecrets();
       personals = await loadPersonals();
+
+      if (!hasConfiguredApiKeys(secrets)) {
+        printLog('❌ No API keys configured. Add a Groq (gsk_…) or HuggingFace (hf_…) key in extension Options, or put it in config/secrets.json, then reload the extension.');
+        return 0;
+      }
+
       await llmManager.initializeClients(secrets);
 
       // Check if batch mode is enabled (default: true)
