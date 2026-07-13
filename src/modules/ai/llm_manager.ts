@@ -1,5 +1,5 @@
 // Converted from modules/ai/llm_manager.py
-import { Secrets, loadSecrets, loadPersonals, getPersonalsSync } from '../config_loader.js';
+import { Secrets, loadSecrets, loadPersonals, getPersonalsSync, hasConfiguredApiKeys } from '../config_loader.js';
 import { groqCreateClient, groqAnswerQuestion, groqExtractSkills, GroqClient } from './groqConnections.js';
 import { huggingfaceCreateClient, huggingfaceAnswerQuestion, huggingfaceExtractSkills, HuggingFaceClient } from './huggingfaceConnections.js';
 import { fuzzyAnswerQuestion, fuzzyExtractSkills } from '../fuzzy_matcher.js';
@@ -50,17 +50,25 @@ export class LLMManager {
   }
 
   async initializeClients(secrets: Secrets): Promise<void> {
+    // Only attempt providers that actually have a key — createClient logs a
+    // critical error for missing keys, which is pure noise in fuzzy-only mode.
+    const groqKey = (secrets.groq_api_key || '').trim();
+    const hfKey = (secrets.huggingface_api_key || '').trim();
 
     try {
-      this.clients.groq = groqCreateClient(secrets);
+      this.clients.groq = groqKey ? groqCreateClient(secrets) : null;
     } catch (e) {
       printLog(`Failed to init Groq: ${e}`);
     }
 
     try {
-      this.clients.huggingface = huggingfaceCreateClient(secrets);
+      this.clients.huggingface = hfKey ? huggingfaceCreateClient(secrets) : null;
     } catch (e) {
       printLog(`Failed to init HuggingFace: ${e}`);
+    }
+
+    if (!groqKey && !hfKey) {
+      printLog('No LLM API keys configured — answers will come from offline fuzzy matching.');
     }
   }
 
@@ -85,6 +93,13 @@ export class LLMManager {
     }
 
     const secrets = await loadSecrets();
+
+    // Fuzzy-only mode: no keys means no provider can ever answer — skip the
+    // provider loop entirely instead of erroring per field.
+    if (!hasConfiguredApiKeys(secrets)) {
+      return this.fuzzyAnswer(question, options, jobDescription);
+    }
+
     const personalsData = getPersonalsSync() || await loadPersonals();
 
     // ENHANCEMENT: If question targets a specific Entry (e.g., "[Entry: 2]"), 
@@ -246,6 +261,13 @@ ${JSON.stringify(personalsData)}
     if (this.cooldownEndTime && new Date() >= this.cooldownEndTime) {
       this.cooldownEndTime = null;
       this.currentFallbackIndex = 0;
+    }
+
+    // No clients → no provider can answer the batch; per-field fuzzy fallback
+    // in the caller handles it. Skip building the (large) batch prompt.
+    if (!this.clients.groq && !this.clients.huggingface) {
+      printLog('Batch skipped: no LLM clients — falling back to per-field matching.');
+      return results;
     }
 
     // Build a combined prompt for all questions

@@ -81,9 +81,10 @@ class FormFiller {
       const secrets = await loadSecrets();
       personals = await loadPersonals();
 
+      // No keys is degraded, not fatal — the fuzzy matcher can still fill
+      // fields straight from the saved profile without any LLM.
       if (!hasConfiguredApiKeys(secrets)) {
-        printLog('❌ No API keys configured. Add a Groq (gsk_…) or HuggingFace (hf_…) key in extension Options, or put it in config/secrets.json, then reload the extension.');
-        return 0;
+        printLog('⚠️ No API keys configured — using offline fuzzy matching only. For full AI filling, add a Groq (gsk_…) or HuggingFace (hf_…) key in extension Options, or in config/secrets.json, then reload the extension.');
       }
 
       await llmManager.initializeClients(secrets);

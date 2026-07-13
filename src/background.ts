@@ -8,6 +8,16 @@ const ALLOWED_FETCH_HOSTS = new Set([
 
 const CONTENT_SCRIPT_FILE = 'dist/content.bundle.js';
 
+// Packaged config files content scripts may request via loadBundledConfig.
+// Content scripts cannot fetch packaged files themselves (no web_accessible_resources).
+const BUNDLED_CONFIG_FILES = new Set([
+  'secrets.json',
+  'secrets.example.json',
+  'personals.json',
+  'personals.example.json',
+  'questions.json',
+]);
+
 function isAllowedProxyUrl(rawUrl: unknown): boolean {
   if (typeof rawUrl !== 'string' || !rawUrl) return false;
   try {
@@ -215,6 +225,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.action === 'fillStatus') {
     // Popup listens via chrome.runtime.onMessage; nothing else to do here.
     return false;
+  }
+
+  // Content script asks for a packaged config file it cannot fetch itself
+  if (message?.action === 'loadBundledConfig') {
+    const filename = message.filename;
+    if (typeof filename !== 'string' || !BUNDLED_CONFIG_FILES.has(filename)) {
+      sendResponse({ error: 'loadBundledConfig blocked: unknown config file' });
+      return false;
+    }
+    loadBundledJson(`config/${filename}`).then((data) => {
+      if (data === null) {
+        sendResponse({ error: `Failed to load config: ${filename}` });
+      } else {
+        sendResponse({ data });
+      }
+    });
+    return true;
   }
 
   // Proxy fetch from content script to bypass page CSP — allowlisted hosts only

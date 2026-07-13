@@ -80,13 +80,25 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
 }
 
 /**
- * Load a JSON config file from the extension's config directory (extension context only).
- * Safe without web_accessible_resources — only extension pages/content scripts can fetch this.
+ * Load a JSON config file from the extension's config directory.
+ *
+ * Extension-origin contexts (options page, popup, service worker) fetch the
+ * packaged file directly. Content scripts CANNOT: without
+ * web_accessible_resources, MV3 treats their fetch as page-origin and Chrome
+ * denies the load. For those we ask the background service worker, which is
+ * extension-origin and always allowed to read packaged files.
  */
 async function loadJsonConfig<T>(filename: string): Promise<T> {
     if (typeof chrome === 'undefined' || !chrome.runtime?.id) {
         throw new Error('Extension context invalidated — refresh the page and try again');
     }
+
+    const isExtensionOrigin =
+        typeof location !== 'undefined' && location.protocol === 'chrome-extension:';
+    if (!isExtensionOrigin) {
+        return loadJsonConfigViaBackground<T>(filename);
+    }
+
     const url = chrome.runtime.getURL(`config/${filename}`);
     if (!url || url.startsWith('chrome-extension://invalid')) {
         throw new Error('Extension context invalidated — refresh the page and try again');
@@ -96,6 +108,23 @@ async function loadJsonConfig<T>(filename: string): Promise<T> {
         throw new Error(`Failed to load config: ${filename}`);
     }
     return response.json();
+}
+
+/** Content-script path: background reads the packaged config file for us. */
+function loadJsonConfigViaBackground<T>(filename: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'loadBundledConfig', filename }, (response) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            if (!response || response.error) {
+                reject(new Error(response?.error || `Failed to load config: ${filename}`));
+                return;
+            }
+            resolve(response.data as T);
+        });
+    });
 }
 
 function normalizeQuestions(raw: {
