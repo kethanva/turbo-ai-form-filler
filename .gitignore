@@ -4,11 +4,17 @@ dist/
 .DS_Store
 CHROME_DATA/
 
-# Secrets and personal data - DO NOT COMMIT
-config/secrets.json
+# Secrets and personal data - DO NOT COMMIT (keep *.example.json tracked)
 config/personals.json
+config/secrets.json
+config/personals.*.local.json
+config/secrets.*.local.json
+config/*.local.json
+.env
+.env.*
+!.env.example
 
-# Build artifacts
+# Build artifacts / packaged releases
 *.zip
 release/
 
@@ -16,10 +22,18 @@ release/
 .vscode/
 .idea/
 .claude/
+.cursor/
 
 # Scratch/temp files
 scratch.js
 scratch.ts
+update_background.sh
+test_plan.md
+
+# Local analysis artifacts (may contain paths / profile snippets)
+graphify-out/
+competitor_analysis/
+CLAUDE.md
 
 # Source maps (expose internal structure)
 dist/**/*.map

@@ -32,3 +32,18 @@ This extension:
 - Stores all data (profile, keys) locally in your browser.
 - Only sends form questions and your profile data to the LLM provider you choose (Groq/HuggingFace).
 - Does not track your browsing history or collect analytics.
+
+## Local Secrets & Profile Data
+
+Never commit real credentials or personal profile data.
+
+| File | Git status | Purpose |
+|------|------------|---------|
+| `config/secrets.example.json` | Tracked | Empty key placeholders + model defaults |
+| `config/personals.example.json` | Tracked | Fake/sample profile template |
+| `config/secrets.json` | **Ignored** | Your API keys (local only) |
+| `config/personals.json` | **Ignored** | Your real profile / PII (local only) |
+
+Setup scripts (`setup.sh` / `setup.bat`) copy the examples to local files **only if they do not already exist**, so existing local keys and profile data are preserved.
+
+Release packaging (`scripts/package.js`) always ships the **example** configs into the zip — never your local `personals.json` / `secrets.json`.
