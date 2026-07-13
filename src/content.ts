@@ -1,6 +1,6 @@
 // Content script for form filling
 import { llmManager } from './modules/ai/llm_manager.js';
-import { loadSecrets, loadPersonals, getPersonalsSync, Personals } from './modules/config_loader.js';
+import { loadSecrets, loadPersonals, getPersonalsSync, hasConfiguredApiKeys, Personals } from './modules/config_loader.js';
 import { printLog } from './modules/helpers.js';
 
 // Cached personals (loaded async at start)
@@ -18,7 +18,7 @@ interface FormElement {
 
 // Cache hostname checks once per page load (hostname never changes mid-session)
 const _hostname = window.location.hostname.toLowerCase();
-const _isWorkday = _hostname.includes('workday.com') || _hostname.includes('myworkday.com');
+const _isWorkday = _hostname.includes('workday.com') || _hostname.includes('myworkday.com') || _hostname.includes('myworkdayjobs.com');
 const _isLinkedIn = _hostname.includes('linkedin.com');
 
 /**
@@ -55,11 +55,22 @@ class FormFiller {
 
     this.isRunning = true;
     this.filledCount = 0;
+    this.emitStatus();
 
     try {
+      // Wait briefly for form to fully render (handles dynamic/lazy-loaded fields)
+      await sleep(500);
+
       // Detect elements first — bail silently for iframes and pages with no forms.
       // This avoids initializing LLM clients on pages that have nothing to fill.
-      const formElements = this.findFormElements();
+      let formElements = this.findFormElements();
+
+      // Retry once if no elements found (form may still be rendering)
+      if (formElements.length === 0) {
+        await sleep(1000);
+        formElements = this.findFormElements();
+      }
+
       if (formElements.length === 0) {
         return 0;
       }
@@ -69,6 +80,22 @@ class FormFiller {
       // Load configs and initialize LLM now that we know there is work to do
       const secrets = await loadSecrets();
       personals = await loadPersonals();
+      const expSummary = (personals.experience_details || [])
+        .map((e, i) => `${i + 1}:${e.companyKey}|${e.title}|${e.from}->${e.to}`)
+        .join('; ');
+      const eduSummary = (personals.education_details || [])
+        .map((e, i) => `${i + 1}:${e.institution}|${e.degree}`)
+        .join('; ');
+      printLog(`📋 Personals config loaded — experience: [${expSummary}]`);
+      printLog(`📋 Personals config loaded — education: [${eduSummary}]`);
+      printLog(`📋 Source: chrome.storage.local.personals (seeded from bundled personals.json if empty)`);
+
+      // No keys is degraded, not fatal — the fuzzy matcher can still fill
+      // fields straight from the saved profile without any LLM.
+      if (!hasConfiguredApiKeys(secrets)) {
+        printLog('⚠️ No API keys configured — using offline fuzzy matching only. For full AI filling, add a Groq (gsk_…) or HuggingFace (hf_…) key in extension Options, or in config/secrets.json, then reload the extension.');
+      }
+
       await llmManager.initializeClients(secrets);
 
       // Check if batch mode is enabled (default: true)
@@ -106,14 +133,13 @@ class FormFiller {
 
           // 3. Fill elements in this chunk (SEQUENTIAL to prevent UI interference)
           // We must fill sequentially because opening a dropdown often closes others
-          // Use pre-computed enhanced questions from questionsList to ensure consistency
+          // Answers are keyed by chunk-local index to avoid duplicate-label collisions
           for (let j = 0; j < chunk.length; j++) {
             const formElement = chunk[j];
-            const enhancedQuestion = questionsList[j].question; // Use same question from batch request
             try {
-              const cachedAnswer = batchAnswers.get(enhancedQuestion);
+              const cachedAnswer = batchAnswers.get(j);
               if (!cachedAnswer) {
-                printLog(`⚠️ No cached answer for: ${enhancedQuestion.substring(0, 60)}...`);
+                printLog(`⚠️ No cached answer for: ${questionsList[j].question.substring(0, 60)}...`);
               }
               await this.fillElementWithAnswer(formElement, cachedAnswer);
 
@@ -161,6 +187,22 @@ class FormFiller {
       return this.filledCount;
     } finally {
       this.isRunning = false;
+      this.emitStatus();
+    }
+  }
+
+  private emitStatus(): void {
+    try {
+      chrome.runtime.sendMessage({
+        action: 'fillStatus',
+        isRunning: this.isRunning,
+        filledCount: this.filledCount,
+      }, () => {
+        // Swallow "Receiving end does not exist" when popup is closed
+        void chrome.runtime.lastError;
+      });
+    } catch {
+      // Extension context unavailable
     }
   }
 
@@ -310,15 +352,31 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     //    Ideally scoped, but shadow hosts usually live in the light DOM of the modal.
     const shadowInputs: Element[] = [];
 
+    // Recursive helper to find all elements in shadow DOM (handles nested shadow hosts)
+    const collectFromShadowDOM = (container: Element | ShadowRoot) => {
+      const formElementSelector = 'input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget, spl-input, spl-textarea, spl-select, spl-autocomplete, spl-phone-field, spl-checkbox, spl-radio-group';
+
+      // Find direct form elements in current shadow
+      const found = container.querySelectorAll(formElementSelector);
+      shadowInputs.push(...Array.from(found));
+
+      // Find all shadow hosts in current level and recurse
+      const allElements = container.querySelectorAll('*');
+      allElements.forEach(el => {
+        if (el.shadowRoot) {
+          collectFromShadowDOM(el.shadowRoot);
+        }
+      });
+    };
+
     // Note: older logic querySelectorAll on document. If root is an element, we query on it.
     // However, root could be 'Document'. querySelectorAll works on both.
     const shadowHosts = root.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
 
     shadowHosts.forEach(host => {
       if (host.shadowRoot) {
-        const found = host.shadowRoot.querySelectorAll(formElementSelector);
-        shadowInputs.push(...Array.from(found));
-        printLog(`Found ${found.length} elements in Shadow DOM of ${host.tagName}`);
+        collectFromShadowDOM(host.shadowRoot);
+        printLog(`Recursively scanned Shadow DOM of ${host.tagName}`);
       }
     });
 
@@ -650,15 +708,71 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   private getCleanLabelText(element: Element): string {
     const clone = element.cloneNode(true) as Element;
     clone.querySelectorAll('.ada-unique-content').forEach(el => el.remove());
+    // Workday often nests instructional/legal rich-text inside the same wrapper as the field label.
+    // Strip those so we don't treat the preamble as the question.
+    clone.querySelectorAll(
+      '[data-automation-id="richText"], [data-automation-id="formFieldHelpText"], .WDGO, .gwt-HTML'
+    ).forEach(el => el.remove());
     return clone.textContent?.trim() || '';
+  }
+
+  /**
+   * When Workday/ATS wraps a short field label after a long legal/instructional paragraph,
+   * keep only the trailing field label (e.g. "Signature and Date") so the LLM is not fed
+   * the preamble — which otherwise gets echoed back into the input.
+   */
+  private sanitizeQuestionLabel(raw: string): string {
+    if (!raw || raw.length < 100) return raw;
+
+    // Preserve trailing metadata tags like [Workday ID: ...] / [Entry: N]
+    const suffixMatch = raw.match(/((?:\s*\[[^\]]+\])+)\s*$/);
+    const suffix = suffixMatch ? suffixMatch[1] : '';
+    const body = suffix ? raw.slice(0, -suffix.length).trim() : raw.trim();
+    if (body.length < 100) return raw;
+
+    const trailingFieldPatterns = [
+      /((?:Electronic\s+)?Signature(?:\s+and\s+Date)?)\s*\*?\s*$/i,
+      /((?:Full\s+Legal\s+Name|Printed\s+Name|Applicant(?:'s)?\s+Name|Full\s+Name)(?:\s*\/\s*Signature)?)\s*\*?\s*$/i,
+      /(Date\s+Signed|Today'?s\s+Date|Signature\s+Date)\s*\*?\s*$/i,
+    ];
+
+    for (const pattern of trailingFieldPatterns) {
+      const match = body.match(pattern);
+      if (match) {
+        return `${match[1].replace(/\*$/, '').trim()}${suffix}`;
+      }
+    }
+
+    // Generic fallback: if text ends with a short sentence/label after a long preamble, keep the tail.
+    const tailMatch = body.match(/(?:^|[\.\?!])\s*([A-Z][^\.\?!]{2,60})\s*\*?\s*$/);
+    if (tailMatch && body.length - tailMatch[1].length > 80) {
+      return `${tailMatch[1].replace(/\*$/, '').trim()}${suffix}`;
+    }
+
+    return raw;
   }
 
   private extractQuestion(element: HTMLElement): string {
     // Try to find associated label
     let question = '';
 
+    // Workday: prefer the dedicated <label> inside formField-* over parent/sibling textContent,
+    // which often includes the legal/instructional rich-text sitting above the real field label.
+    const workdayFieldEarly = element.closest('[data-automation-id^="formField-"]');
+    if (workdayFieldEarly) {
+      const wdLabel =
+        workdayFieldEarly.querySelector('label') ||
+        workdayFieldEarly.querySelector('[data-automation-id="formLabel"]');
+      if (wdLabel) {
+        const labelText = this.getCleanLabelText(wdLabel);
+        if (labelText && labelText.length > 1) {
+          question = labelText;
+        }
+      }
+    }
+
     // Check for "label" attribute (Common in Web Components like spl-input)
-    if (element.hasAttribute('label')) {
+    if (!question && element.hasAttribute('label')) {
       question = element.getAttribute('label') || '';
       if (question) {
         // printLog(`Found label attribute on ${element.tagName}: ${question}`);
@@ -675,6 +789,30 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       // Fallback to innerText/textContent
       if (!question) {
         question = element.textContent?.trim() || '';
+      }
+
+      // Special handling for sr-screening-questions-form fields:
+      // Look for label in preceding sibling or wrapper
+      if (!question) {
+        const parentWrapper = element.closest('.sr-form-field, .form-field, .field-wrapper, [class*="question"]');
+        if (parentWrapper) {
+          // Look for label in the wrapper
+          const label = parentWrapper.querySelector('label, .label, [class*="label"], .field-label');
+          if (label) {
+            question = this.getCleanLabelText(label);
+          }
+        }
+        // Also check for previous label sibling
+        if (!question) {
+          let prev = element.previousElementSibling;
+          while (prev && !question) {
+            if (prev.tagName === 'LABEL' || prev.classList.contains('label') || prev.classList.contains('field-label')) {
+              question = this.getCleanLabelText(prev);
+              break;
+            }
+            prev = prev.previousElementSibling;
+          }
+        }
       }
     }
 
@@ -703,7 +841,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
     // Check for id and associated label
     if (!question && element.id) {
-      const label = document.querySelector(`label[for="${element.id}"]`);
+      const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
       if (label) {
         question = this.getCleanLabelText(label);
       }
@@ -805,7 +943,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           (prev.textContent || '').trim().length === 0;
 
         if (!isIgnored) {
-          question = this.getCleanLabelText(prev);
+          const siblingText = this.getCleanLabelText(prev);
+          // Ignore long instructional/legal blocks sitting above the real field label
+          if (siblingText && siblingText.length <= 120) {
+            question = siblingText;
+          }
           // printLog(`Found label via previous sibling ${prev.tagName}: ${question}`);
         }
       }
@@ -930,8 +1072,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       if (rowHeader && rowHeader.textContent?.includes('Row number')) {
         rowText = rowHeader.textContent.trim();
       } else {
-        // Check for Workday patterns
-        // Method 1: Use aria-labelledby (most reliable for Workday)
+        // Method 1: Use aria-labelledby or aria-label (most reliable for Workday)
         let current = element.parentElement;
         for (let i = 0; i < 20 && current && !rowText; i++) {
           const labelId = current.getAttribute('aria-labelledby');
@@ -947,6 +1088,18 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               }
             }
           }
+          
+          // Also check aria-label directly on the container (common in newer Workday UI)
+          const ariaLabel = current.getAttribute('aria-label');
+          if (ariaLabel) {
+            const workdayMatch = ariaLabel.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+            if (workdayMatch) {
+              rowText = ariaLabel;
+              printLog(`Found Workday section via aria-label: ${rowText}`);
+              break;
+            }
+          }
+          
           current = current.parentElement;
         }
 
@@ -959,6 +1112,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
             const workdayMatch = textContent.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
             if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
+
               rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
               printLog(`Found Workday section: ${rowText}`);
               break;
@@ -978,22 +1132,22 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     }
 
     if (rowText) {
-      // Normalize to "[Entry: X]" to be crystal clear for LLM
-      // Support multiple patterns
+      // Normalize with section type so Education dates are not filled from experience_details
       let match = rowText.match(/Row number\s*(\d+)/i);
       if (match) {
         const entryNum = match[1];
         question += ` [Entry: ${entryNum}]`;
         printLog(`Context added: Entry ${entryNum} for field (Row number)`);
       } else {
-        // Try Workday patterns
         match = rowText.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
         if (match) {
+          const section = match[1];
           const entryNum = match[2];
-          question += ` [Entry: ${entryNum}]`;
-          printLog(`Context added: Entry ${entryNum} for field (${match[1]})`);
+          const isEdu = /education|school/i.test(section);
+          const typed = isEdu ? `Education Entry: ${entryNum}` : `Position Entry: ${entryNum}`;
+          question += ` [${typed}] [Entry: ${entryNum}]`;
+          printLog(`Context added: ${typed} for field (${section})`);
         } else {
-          // Fallback: just append the row text
           question += ` [${rowText}]`;
         }
       }
@@ -1043,8 +1197,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       // But question += ... above.
 
       // 1. Find the closest "repeater item" candidate
-      // We look for LI elements or DIVs with specific classes that suggest repetition
-      const repeaterItem = element.closest('li, .experience, .education, .employment, .position, .job, .school, .repeater-item, [ng-repeat]');
+      // We look for LI elements, role="listitem", or DIVs with specific classes that suggest repetition
+      const repeaterItem = element.closest('li, [role="listitem"], .experience, .education, .employment, .position, .job, .school, .repeater-item, [ng-repeat]');
 
       if (repeaterItem && repeaterItem.parentElement) {
         // Check if this item has siblings of the same tag/class structure
@@ -1054,7 +1208,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           // If it's a div, ensure it has similar classes (simple heuristic)
           if (child.tagName === 'DIV' && child.className !== repeaterItem.className) return false;
           // Exclude irrelevant elements (like breaks or hidden inputs if they appear as siblings)
-          return child.clientHeight > 0 || child.tagName === 'LI';
+          return child.clientHeight > 0 || child.tagName === 'LI' || child.getAttribute('role') === 'listitem';
         });
 
         // Only treat as repeater if there are multiple similar items OR if it's an ng-repeat/li structure 
@@ -1062,7 +1216,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         // For safety, we often want to be sure it's a "section" repeater. 
         // Let's assume if it's an LI inside a UL/OL, it's a list item.
 
-        const isList = repeaterItem.tagName === 'LI';
+        const isList = repeaterItem.tagName === 'LI' || repeaterItem.getAttribute('role') === 'listitem';
         const hassiblings = siblings.length > 0; // It's always >0 because it includes itself
 
         if (isList || hassiblings) {
@@ -1141,7 +1295,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
     }
 
-    return question || 'Form field';
+    return this.sanitizeQuestionLabel(question || 'Form field');
   }
 
   private extractOptions(element: HTMLElement): string[] {
@@ -1170,7 +1324,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     } else if (element.getAttribute('type') === 'radio' || element.getAttribute('type') === 'checkbox') {
       const name = element.getAttribute('name');
       if (name) {
-        const radioButtons = document.querySelectorAll<HTMLInputElement>(`input[type="${element.getAttribute('type')}"][name="${name}"]`);
+        const radioButtons = document.querySelectorAll<HTMLInputElement>(`input[type="${CSS.escape(element.getAttribute('type') || '')}"][name="${CSS.escape(name)}"]`);
         radioButtons.forEach(radio => {
           const label = this.findLabelForElement(radio);
           if (label) {
@@ -1228,7 +1382,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
   private findLabelForElement(element: HTMLElement): string | null {
     if (element.id) {
-      const label = document.querySelector(`label[for="${element.id}"]`);
+      const label = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
       if (label) {
         return this.getCleanLabelText(label) || null;
       }
@@ -1242,25 +1396,342 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     return null;
   }
 
+  /** True when experience_details[N].to is Present/Current/Ongoing (not empty). */
+  private isCurrentExperience(entryIndex: number): boolean {
+    const experience = personals?.experience_details?.[entryIndex];
+    if (!experience) return false;
+    const endDate = (experience.to || '').toString().toLowerCase().trim();
+    return endDate === 'present' || endDate === 'current' || endDate === 'ongoing';
+  }
+
+  /**
+   * Skip Workday endDate when this experience entry is current.
+   * Prefer personals config over DOM checkbox state (checkbox is often filled later).
+   */
+  private shouldSkipWorkdayEndDate(element: HTMLElement, question?: string): boolean {
+    const elemId = element.id || '';
+    const q = (question || this.extractQuestion(element) || '').toLowerCase();
+    const looksLikeEndDate =
+      elemId.includes('--endDate') ||
+      q.includes('formfield-enddate') ||
+      (/\bto\b/.test(q) && (q.includes('date') || q.includes('month') || q.includes('year') || q.includes('workday')));
+
+    if (!looksLikeEndDate) return false;
+
+    // Never skip education end dates
+    if (this.isEducationSection(question || '')) return false;
+
+    const entryIndex = this.extractEntryIndex(question || this.extractQuestion(element) || '');
+    if (entryIndex !== null && this.isCurrentExperience(entryIndex)) {
+      printLog(`⏭ Skipping endDate [Entry: ${entryIndex + 1}] (profile to=Present)`);
+      return true;
+    }
+
+    // Fallback: DOM checkbox already checked
+    if (elemId.includes('--endDate')) {
+      const entryPrefix = elemId.split('--')[0];
+      const cwh = document.getElementById(`${entryPrefix}--currentlyWorkHere`) as HTMLInputElement | null;
+      if (cwh?.checked) {
+        printLog(`⏭ Skipping endDate for ${entryPrefix} (currently work here checked)`);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Format experience/education date from personals into MM/YYYY.
+   * Returns null for Present/Current (caller should skip end-date / check currently-work-here).
+   */
+  private formatProfileDate(raw: string | undefined | null): string | null {
+    if (raw == null) return null;
+    const s = String(raw).trim();
+    if (!s) return null;
+    const lower = s.toLowerCase();
+    if (lower === 'present' || lower === 'current' || lower === 'ongoing') {
+      return null;
+    }
+
+    // MM-YYYY or MM/YYYY
+    let m = s.match(/^(\d{1,2})[-/](\d{4})$/);
+    if (m) return `${m[1].padStart(2, '0')}/${m[2]}`;
+
+    // YYYY-MM or YYYY/MM
+    m = s.match(/^(\d{4})[-/](\d{1,2})$/);
+    if (m) return `${m[2].padStart(2, '0')}/${m[1]}`;
+
+    // YYYY only
+    m = s.match(/^(\d{4})$/);
+    if (m) return `01/${m[1]}`;
+
+    // MM/DD/YYYY or YYYY-MM-DD
+    m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (m) return `${m[1].padStart(2, '0')}/${m[3]}`;
+    m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (m) return `${m[2].padStart(2, '0')}/${m[1]}`;
+
+    return s;
+  }
+
+  private extractEntryIndex(question: string): number | null {
+    const entryMatch =
+      question.match(/\[(?:Position|Education)\s+Entry:\s*(\d+)\]/i) ||
+      question.match(/\[Entry:\s*(\d+)\]/i) ||
+      question.match(/(?:position|education)\s+entry[:\s]*(\d+)/i) ||
+      question.match(/entry[:\s]*(\d+)/i);
+    if (!entryMatch) return null;
+    const idx = parseInt(entryMatch[1], 10) - 1;
+    return Number.isFinite(idx) && idx >= 0 ? idx : null;
+  }
+
+  private isEducationSection(question: string): boolean {
+    const q = (question || '').toLowerCase();
+    if (/\[education\s+entry:/i.test(question)) return true;
+    if (/\[position\s+entry:/i.test(question)) return false;
+    return (
+      q.includes('education') ||
+      q.includes('formfield-school') ||
+      q.includes('formfield-degree') ||
+      q.includes('formfield-fieldofstudy') ||
+      q.includes('school or university') ||
+      q.includes('field of study')
+    );
+  }
+
+  private isExperienceSection(question: string): boolean {
+    const q = (question || '').toLowerCase();
+    if (/\[position\s+entry:/i.test(question)) return true;
+    if (/\[education\s+entry:/i.test(question)) return false;
+    return (
+      q.includes('professional experience') ||
+      q.includes('work experience') ||
+      q.includes('formfield-jobtitle') ||
+      q.includes('formfield-companyname') ||
+      q.includes('formfield-roledescription') ||
+      q.includes('formfield-currentlyworkhere') ||
+      q.includes('role description') ||
+      q.includes('job title')
+    );
+  }
+
+  /**
+   * Deterministic answer for signature / printed-name fields.
+   * Workday often prefixes these with a long legal paragraph; use personals name
+   * instead of letting the LLM echo the disclosure text.
+   */
+  private getSignatureAnswer(question: string): string | null {
+    const q = (question || '').toLowerCase();
+    const cleaned = q.replace(/\s*\[[^\]]+\]\s*/g, ' ').replace(/\*/g, '').trim();
+
+    const isSignatureAndDate = /\bsignature\s+and\s+date\b/.test(q);
+    // Prefer short, explicit labels — long legal preambles can mention "signature" without being a name field.
+    const isPlainSignature =
+      /^(electronic\s+)?signature$/.test(cleaned) ||
+      /^(your\s+)?signature$/.test(cleaned) ||
+      (cleaned.length < 80 && /\b(your\s+)?signature\b/.test(cleaned)) ||
+      /\bprinted\s+name\b/.test(cleaned) ||
+      /\bfull\s+legal\s+name\b/.test(cleaned);
+
+    // Consent/agree checkboxes that merely mention "electronic signature" are not name fields.
+    const isConsentOnly =
+      /\b(agree|consent|acknowledge|authorize|understand|certify)\b/.test(q) &&
+      !isSignatureAndDate &&
+      !/\b(printed\s+name|full\s+legal\s+name|signature\s+and\s+date)\b/.test(q);
+
+    if (isConsentOnly || (!isSignatureAndDate && !isPlainSignature)) {
+      return null;
+    }
+
+    const first = String(personals?.first_name || '').trim();
+    const middle = String(personals?.middle_name || '').trim();
+    const last = String(personals?.last_name || '').trim();
+    const fullName = [first, middle, last].filter(Boolean).join(' ');
+    if (!fullName) return null;
+
+    if (isSignatureAndDate || /\bdate\b/.test(cleaned)) {
+      const today = new Date();
+      const mm = String(today.getMonth() + 1).padStart(2, '0');
+      const dd = String(today.getDate()).padStart(2, '0');
+      const yyyy = today.getFullYear();
+      const signed = `${fullName} ${mm}/${dd}/${yyyy}`;
+      printLog(`✓ Config → Signature/Date: ${signed}`);
+      return signed;
+    }
+
+    printLog(`✓ Config → Signature: ${fullName}`);
+    return fullName;
+  }
+
+  /**
+   * Deterministic answers for Workday/ATS repeating Experience & Education fields.
+   * Reads ONLY personals.experience_details / education_details — never LLM examples.
+   */
+  private getStructuredEntryAnswer(question: string): string | null {
+    const q = (question || '').toLowerCase();
+    const entryIndex = this.extractEntryIndex(question);
+    const isEdu = this.isEducationSection(question);
+    const isExp = this.isExperienceSection(question) || (
+      !isEdu && entryIndex !== null && (
+        q.includes('formfield-location') ||
+        q.includes('formfield-startdate') ||
+        q.includes('formfield-enddate') ||
+        q.includes('company') ||
+        q.includes('employer') ||
+        ((q.includes('from') || q.includes('to') || q.includes('start') || q.includes('end')) && entryIndex !== null)
+      )
+    );
+
+    // Role description — require an Entry index (do not default to job 1)
+    const isRoleDescription =
+      q.includes('role description') ||
+      q.includes('formfield-roledescription') ||
+      q.includes('role summary') ||
+      (entryIndex !== null && !isEdu && (
+        q.includes('job description') ||
+        q.includes('responsibilities')
+      ));
+
+    if (isRoleDescription) {
+      if (entryIndex === null) return null;
+      const experience = personals?.experience_details?.[entryIndex];
+      if (!experience?.highlights?.length) return null;
+      const description = experience.highlights
+        .map((h) => {
+          const text = String(h).trim();
+          if (!text) return '';
+          return /^[-•*]/.test(text) ? text : `• ${text}`;
+        })
+        .filter(Boolean)
+        .join('\n');
+      if (!description) return null;
+      printLog(`✓ Config highlights → Role Description [Entry: ${entryIndex + 1}] (${experience.highlights.length} bullets, ${experience.companyKey})`);
+      return description;
+    }
+
+    if (entryIndex === null) return null;
+
+    // Education structured fields (checked first when tagged Education)
+    if (isEdu) {
+      const education = personals?.education_details?.[entryIndex];
+      if (!education) {
+        printLog(`⚠ No education_details[${entryIndex}] in personals config`);
+        return null;
+      }
+
+      if (q.includes('school') || q.includes('university') || q.includes('institution') || q.includes('formfield-school') || q.includes('college')) {
+        printLog(`✓ Config → School [Entry: ${entryIndex + 1}]: ${education.institution}`);
+        return education.institution || null;
+      }
+      if (q.includes('degree') || q.includes('formfield-degree')) {
+        printLog(`✓ Config → Degree [Entry: ${entryIndex + 1}]: ${education.degree}`);
+        return education.degree || null;
+      }
+      if (q.includes('field') || q.includes('major') || q.includes('formfield-fieldofstudy') || q.includes('study')) {
+        printLog(`✓ Config → Field [Entry: ${entryIndex + 1}]: ${education.field}`);
+        return education.field || null;
+      }
+
+      const isFrom =
+        q.includes('formfield-startdate') ||
+        (/\bfrom\b/.test(q) && !/\bto\b/.test(q)) ||
+        (q.includes('start') && (q.includes('date') || q.includes('year') || q.includes('month')));
+      const isTo =
+        q.includes('formfield-enddate') ||
+        (/\bto\b/.test(q) && !/\bfrom\b/.test(q)) ||
+        (q.includes('end') && (q.includes('date') || q.includes('year') || q.includes('month'))) ||
+        q.includes('graduation');
+
+      if (isFrom) {
+        const formatted = this.formatProfileDate(education.from);
+        printLog(`✓ Config → Edu From [Entry: ${entryIndex + 1}]: ${formatted}`);
+        return formatted;
+      }
+      if (isTo) {
+        const formatted = this.formatProfileDate(education.to);
+        printLog(`✓ Config → Edu To [Entry: ${entryIndex + 1}]: ${formatted}`);
+        return formatted;
+      }
+      return null;
+    }
+
+    // Experience structured fields
+    if (isExp) {
+      const experience = personals?.experience_details?.[entryIndex];
+      if (!experience) {
+        printLog(`⚠ No experience_details[${entryIndex}] in personals config`);
+        return null;
+      }
+
+      if (q.includes('job title') || q.includes('formfield-jobtitle') || (q.includes('title') && !q.includes('subtitle'))) {
+        printLog(`✓ Config → Job Title [Entry: ${entryIndex + 1}]: ${experience.title}`);
+        return experience.title || null;
+      }
+      if (q.includes('company') || q.includes('employer') || q.includes('formfield-companyname')) {
+        printLog(`✓ Config → Company [Entry: ${entryIndex + 1}]: ${experience.companyKey}`);
+        return experience.companyKey || null;
+      }
+      if (q.includes('location') || q.includes('formfield-location')) {
+        printLog(`✓ Config → Location [Entry: ${entryIndex + 1}]: ${experience.location}`);
+        return experience.location || null;
+      }
+
+      const isFrom =
+        q.includes('formfield-startdate') ||
+        (/\bfrom\b/.test(q) && !/\bto\b/.test(q)) ||
+        (q.includes('start') && (q.includes('date') || q.includes('month') || q.includes('year')));
+      const isTo =
+        q.includes('formfield-enddate') ||
+        (/\bto\b/.test(q) && !/\bfrom\b/.test(q)) ||
+        (q.includes('end') && (q.includes('date') || q.includes('month') || q.includes('year')));
+
+      if (isFrom) {
+        const formatted = this.formatProfileDate(experience.from);
+        printLog(`✓ Config → From [Entry: ${entryIndex + 1}]: ${formatted} (raw: ${experience.from})`);
+        return formatted;
+      }
+      if (isTo) {
+        // Present jobs: skip (null) — currently-work-here checkbox handles this
+        if (this.isCurrentExperience(entryIndex)) {
+          printLog(`⏭ Config → To [Entry: ${entryIndex + 1}] is Present; not filling end date`);
+          return null;
+        }
+        const formatted = this.formatProfileDate(experience.to);
+        printLog(`✓ Config → To [Entry: ${entryIndex + 1}]: ${formatted} (raw: ${experience.to})`);
+        return formatted;
+      }
+    }
+
+    return null;
+  }
+
   private async fillElement(formElement: FormElement): Promise<void> {
     try {
       const { element, type, question, options } = formElement;
 
+      const enhancedQuestionEarly = this.getEnhancedQuestion(formElement);
+      if (this.shouldSkipWorkdayEndDate(element, enhancedQuestionEarly)) {
+        return;
+      }
+
       printLog(`Filling element: ${question || 'Unknown field'
         }`);
 
-      const enhancedQuestion = this.getEnhancedQuestion(formElement);
+      const enhancedQuestion = enhancedQuestionEarly;
 
-      // Get answer from LLM
-      const userInfo = personals.user_information_all || JSON.stringify(personals);
-      const answer = await llmManager.getAnswer(
-        enhancedQuestion,
-        options,
-        this.determineQuestionType(type, options),
-        undefined,
-        userInfo,
-        JSON.stringify(personals)
-      );
+      // Prefer structured personals: signature name, then Experience/Education entry fields
+      let answer = this.getSignatureAnswer(enhancedQuestion) || this.getStructuredEntryAnswer(enhancedQuestion);
+
+      if (!answer) {
+        const userInfo = personals.user_information_all || JSON.stringify(personals);
+        answer = await llmManager.getAnswer(
+          enhancedQuestion,
+          options,
+          this.determineQuestionType(type, options),
+          undefined,
+          userInfo,
+          JSON.stringify(personals)
+        );
+      }
 
       if (!answer) {
         printLog(`No answer generated for: ${question} `);
@@ -1282,11 +1753,18 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     try {
       const { element, type, question, options } = formElement;
 
-      let answer = cachedAnswer;
+      const enhancedQuestion = this.getEnhancedQuestion(formElement);
+
+      // Skip endDate when profile says Present (do not wait for checkbox DOM state)
+      if (this.shouldSkipWorkdayEndDate(element, enhancedQuestion)) {
+        return;
+      }
+
+      // Prefer structured personals (signature / entry fields) over batch LLM answers
+      let answer = this.getSignatureAnswer(enhancedQuestion) || this.getStructuredEntryAnswer(enhancedQuestion) || cachedAnswer;
 
       // Fall back to individual LLM call if no cached answer
       if (!answer) {
-        const enhancedQuestion = this.getEnhancedQuestion(formElement);
         const userInfo = personals.user_information_all || JSON.stringify(personals);
         const llmAnswer = await llmManager.getAnswer(
           enhancedQuestion,
@@ -1365,6 +1843,105 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     }
   }
 
+  /**
+   * Set an input/textarea value in a way React/Workday trackers notice.
+   * Plain `el.value = ...` only paints the DOM; Workday still treats the field as empty.
+   */
+  private setReactInputValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+    const tag = el.tagName.toLowerCase();
+    const proto =
+      tag === 'textarea'
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+    const nativeSetter = descriptor?.set;
+
+    try {
+      el.focus();
+    } catch {
+      // Some Workday controls reject programmatic focus; continue anyway.
+    }
+
+    if (nativeSetter) {
+      nativeSetter.call(el, value);
+    } else {
+      el.value = value;
+    }
+
+    // Keep ARIA spinbutton state in sync when present
+    if (el.getAttribute('role') === 'spinbutton') {
+      el.setAttribute('aria-valuenow', value);
+      el.setAttribute('aria-valuetext', value);
+    }
+
+    el.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        cancelable: true,
+        data: value,
+        inputType: 'insertText',
+      })
+    );
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  /**
+   * Simulate Tab-away commit. Manually Tabbing a Workday field validates and clears
+   * "required" errors even when the value was already visible.
+   */
+  private simulateTabCommit(el: HTMLElement): void {
+    const tabInit: KeyboardEventInit = {
+      key: 'Tab',
+      code: 'Tab',
+      keyCode: 9,
+      which: 9,
+      bubbles: true,
+      cancelable: true,
+    };
+
+    try {
+      el.focus();
+    } catch {
+      // ignore
+    }
+
+    el.dispatchEvent(new KeyboardEvent('keydown', tabInit));
+    el.dispatchEvent(new KeyboardEvent('keyup', tabInit));
+
+    try {
+      el.blur();
+    } catch {
+      // ignore
+    }
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+
+    // Move focus to the next focusable control when possible (closer to a real Tab)
+    const focusable = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((node) => {
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden' && (node.offsetParent !== null || node === el);
+    });
+
+    const idx = focusable.indexOf(el);
+    const next = idx >= 0 ? focusable[idx + 1] : undefined;
+    if (next && next !== el) {
+      try {
+        next.focus();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /** Workday-only: React-safe set + Tab commit so required validation clears. */
+  private commitWorkdayFieldValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+    this.setReactInputValue(el, value);
+    this.simulateTabCommit(el);
+  }
+
   private async setElementValue(
     element: HTMLElement,
     type: string,
@@ -1433,14 +2010,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             // Find the parent dateInputWrapper to locate both Month and Year inputs
             const dateWrapper = input.closest('[data-automation-id="dateInputWrapper"]');
 
-            // Helper to set spinbutton value
-            const setSpinValue = (el: HTMLInputElement, val: number) => {
-              el.value = String(val);
-              el.setAttribute('aria-valuenow', String(val));
-              el.setAttribute('aria-valuetext', String(val));
-              el.dispatchEvent(new Event('input', { bubbles: true }));
-              el.dispatchEvent(new Event('change', { bubbles: true }));
-              el.dispatchEvent(new Event('blur', { bubbles: true }));
+            const setSpinValue = async (el: HTMLInputElement, val: number, padMonth = false) => {
+              const str = padMonth ? String(val).padStart(2, '0') : String(val);
+              this.setReactInputValue(el, str);
             };
 
             if (dateWrapper) {
@@ -1449,21 +2021,27 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
               if (monthInput && yearInput) {
                 // If we have extracted both month and year (from full date), set both
-                if (month !== null && year !== null) {
-                  setSpinValue(monthInput, month);
-                  setSpinValue(yearInput, year);
+                // BUT only if we are on the Month field. If we are on the Year field,
+                // setting both could overwrite a correctly filled month with a default value.
+                if (month !== null && year !== null && ariaLabel !== 'Year') {
+                  await setSpinValue(monthInput, month, true);
+                  await sleep(getConditionalDelay(40, 120));
+                  await setSpinValue(yearInput, year, false);
+                  this.simulateTabCommit(yearInput);
                   printLog(`✓ Set Workday date spinbuttons (Sync): Month=${month}, Year=${year}`);
                   break; // Done
                 }
 
                 // If we only have specific parts (because LLM answered "month" or "year" question)
                 if (ariaLabel === 'Month' && month !== null) {
-                  setSpinValue(monthInput, month);
+                  await setSpinValue(monthInput, month, true);
+                  this.simulateTabCommit(monthInput);
                   printLog(`✓ Set Workday Month spinbutton: ${month}`);
                   break;
                 }
                 if (ariaLabel === 'Year' && year !== null) {
-                  setSpinValue(yearInput, year);
+                  await setSpinValue(yearInput, year, false);
+                  this.simulateTabCommit(yearInput);
                   printLog(`✓ Set Workday Year spinbutton: ${year}`);
                   break;
                 }
@@ -1472,11 +2050,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
             // Fallback if no wrapper found or simple structure
             if (ariaLabel === 'Month' && month !== null) {
-              setSpinValue(input as HTMLInputElement, month);
+              await setSpinValue(input as HTMLInputElement, month, true);
+              this.simulateTabCommit(input as HTMLInputElement);
               printLog(`✓ Set Month spinbutton (fallback): ${month}`);
               break;
             } else if (ariaLabel === 'Year' && year !== null) {
-              setSpinValue(input as HTMLInputElement, year);
+              await setSpinValue(input as HTMLInputElement, year, false);
+              this.simulateTabCommit(input as HTMLInputElement);
               printLog(`✓ Set Year spinbutton (fallback): ${year}`);
               break;
             }
@@ -1496,9 +2076,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         if (maxLen && parseInt(maxLen) > 0) {
           textValue = value.substring(0, parseInt(maxLen));
         }
-        input.value = textValue;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
+        if (isWorkdayDomain()) {
+          this.commitWorkdayFieldValue(input as HTMLInputElement | HTMLTextAreaElement, textValue);
+        } else {
+          input.value = textValue;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
         break;
 
       case 'number':
@@ -1540,9 +2124,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             numVal = Math.round(numVal / stepVal) * stepVal;
           }
 
-          input.value = String(numVal);
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
+          if (isWorkdayDomain()) {
+            this.commitWorkdayFieldValue(input as HTMLInputElement, String(numVal));
+          } else {
+            input.value = String(numVal);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          }
           printLog(`✓ Set number input to: ${numVal} `);
         } else {
           printLog(`⚠ Could not parse number from: ${value} `);
@@ -1586,15 +2174,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           }
 
           // For HTML5 date inputs, always use YYYY-MM-DD regardless of placeholder
-          if (input.type === 'date') {
-            input.value = parsedDate;
+          const dateToSet = input.type === 'date' ? parsedDate : formattedDate;
+          if (isWorkdayDomain()) {
+            this.commitWorkdayFieldValue(input as HTMLInputElement, dateToSet);
           } else {
-            input.value = formattedDate;
+            input.value = dateToSet;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
           }
-
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          printLog(`✓ Set date to: ${input.value} (format: ${expectedFormat})`);
+          printLog(`✓ Set date to: ${(input as HTMLInputElement).value} (format: ${expectedFormat})`);
         } else {
           printLog(`⚠ Could not parse date: ${value} `);
         }
@@ -1683,8 +2271,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           const experience = personals.experience_details[entryIndex];
           if (experience) {
             const endDate = (experience.to || '').toString().toLowerCase().trim();
-            // Check if "to" date indicates current employment
-            if (endDate === 'present' || endDate === '' || endDate === 'current' || endDate === 'ongoing') {
+            // Only explicit present markers — empty to must NOT imply current job
+            if (endDate === 'present' || endDate === 'current' || endDate === 'ongoing') {
               shouldCheckCurrentWork = true;
               printLog(`✓ Entry ${entryIndex + 1} is current position (to: "${experience.to}"), will check "currently work here"`);
             }
@@ -1791,7 +2379,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         printLog(`Radio: looking for "${value}" in options: ${JSON.stringify(options)} `);
         const name = input.getAttribute('name');
         if (name) {
-          const radios = document.querySelectorAll<HTMLInputElement>(`input[type = "radio"][name = "${name}"]`);
+          const radios = document.querySelectorAll<HTMLInputElement>(`input[type="radio"][name="${CSS.escape(name)}"]`);
           const valLowerRadio = value.toLowerCase().trim();
 
           let foundRadio = false;
@@ -1930,6 +2518,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           // Fire multiple events to ensure frameworks detect the change
           select.dispatchEvent(new Event('change', { bubbles: true }));
           select.dispatchEvent(new Event('input', { bubbles: true }));
+          if (isWorkdayDomain()) {
+            this.simulateTabCommit(select);
+          }
           printLog(`✓ Set select to option ${matchingOptionIndex}: ${select.options[matchingOptionIndex].text} `);
         } else {
           // Smart fallback: Check if this is a Yes/No question
@@ -1960,6 +2551,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               select.options[targetIndex].selected = true;
               select.dispatchEvent(new Event('change', { bubbles: true }));
               select.dispatchEvent(new Event('input', { bubbles: true }));
+              if (isWorkdayDomain()) {
+                this.simulateTabCommit(select);
+              }
               printLog(`⚠ N/A returned but Yes/No detected. Auto-selected: ${defaultAnswer.toUpperCase()} (question: ${isPositiveQuestion ? 'positive' : isNegativeQuestion ? 'negative' : 'neutral'})`);
             }
           } else {
@@ -1979,6 +2573,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               select.options[fallbackIndex].selected = true;
               select.dispatchEvent(new Event('change', { bubbles: true }));
               select.dispatchEvent(new Event('input', { bubbles: true }));
+              if (isWorkdayDomain()) {
+                this.simulateTabCommit(select);
+              }
               printLog(`⚠ No match for "${value}", auto-selected first valid option: ${select.options[fallbackIndex].text}`);
             } else {
               printLog(`⚠ No matching option found for value: ${value} `);
@@ -2126,6 +2723,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           // Simple click
           bestMatch.click();
           await sleep(100);
+          if (isWorkdayDomain()) {
+            this.simulateTabCommit(input as HTMLElement);
+          }
           printLog(`✓ Clicked ${type} option: ${bestMatch.textContent} `);
         } else {
           // Fallback: If no option matches, scrape visible options and ASK LLM AGAIN
@@ -2214,6 +2814,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
                     // Simple click
                     newBestMatch.click();
                     await sleep(100);
+                    if (isWorkdayDomain()) {
+                      this.simulateTabCommit(input as HTMLElement);
+                    }
                     printLog(`✓ Clicked ${type} option(after re - ask): ${newBestMatch.textContent} `);
                     return; // Success!
                   }
@@ -2225,10 +2828,16 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           // If fallback failed, try typing (only for combobox inputs)
           if (type === 'combobox' && input instanceof HTMLInputElement) {
             printLog(`⚠ No combobox option found for "${value}".Trying to type it...`);
-            input.value = value;
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+            if (isWorkdayDomain()) {
+              this.setReactInputValue(input, value);
+              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+              this.simulateTabCommit(input);
+            } else {
+              input.value = value;
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+            }
           } else {
             printLog(`⚠ No option found for ${type} "${value}" even after re - asking.`);
           }
@@ -2270,9 +2879,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       default:
         // For textarea and other elements
         if (input.tagName.toLowerCase() === 'textarea') {
-          input.value = value;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
+          if (isWorkdayDomain()) {
+            this.commitWorkdayFieldValue(input as HTMLTextAreaElement, value);
+          } else {
+            input.value = value;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          }
         } else if (input.tagName.toLowerCase().startsWith('spl-')) {
           // Handle spl-* Custom Elements
           printLog(`Setting value for custom element ${input.tagName}`);
@@ -2323,10 +2936,20 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   private parseDateToISO(value: string): string | null {
     const trimmed = value.trim();
 
+    // Prevent pure numbers (e.g., "2022" or "3") from being parsed as full dates
+    // Native Date("2022") evaluates to Jan 1, 2022, which incorrectly overwrites the month
+    if (/^\d+$/.test(trimmed)) {
+      return null;
+    }
+
     // Try common formats
     const datePatterns = [
       // yyyy-mm-dd (already ISO)
       { regex: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, format: (m: RegExpMatchArray) => `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` },
+      // mm/yyyy or mm-yyyy (Workday month/year) → first day of month
+      { regex: /^(\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[2]}-${m[1].padStart(2, '0')}-01` },
+      // yyyy/mm or yyyy-mm
+      { regex: /^(\d{4})[\/\-](\d{1,2})$/, format: (m: RegExpMatchArray) => `${m[1]}-${m[2].padStart(2, '0')}-01` },
       // mm/dd/yyyy or mm-dd-yyyy (US)
       { regex: /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/, format: (m: RegExpMatchArray) => `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` },
       // Month dd, yyyy
@@ -2377,7 +3000,28 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   }
 
   hasFormElements(): boolean {
-    return this.findFormElements().length > 0;
+    const formElementSelector = 'input, textarea, select, button[aria-haspopup="listbox"], ui5-date-picker-xweb-calendar-widget, spl-input, spl-textarea, spl-select, spl-autocomplete, spl-phone-field, spl-checkbox, spl-radio-group';
+    if (document.querySelector(formElementSelector)) {
+      return true;
+    }
+
+    // Match findFormElements(): recursively walk nested shadow trees
+    const hasInShadow = (container: Element | ShadowRoot): boolean => {
+      if (container.querySelector(formElementSelector)) return true;
+      const all = container.querySelectorAll('*');
+      for (const el of Array.from(all)) {
+        if (el.shadowRoot && hasInShadow(el.shadowRoot)) return true;
+      }
+      return false;
+    };
+
+    const shadowHosts = document.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
+    for (const host of Array.from(shadowHosts)) {
+      if (host.shadowRoot && hasInShadow(host.shadowRoot)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private delay(ms: number): Promise<void> {
@@ -2385,39 +3029,43 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   }
 }
 
-// Initialize form filler
+// Safe under dynamic re-injection: always refresh globals from this bundle so
+// extension reloads/updates replace stale handlers. Bind the message listener once.
+const __w = window as any;
 const formFiller = new FormFiller();
-
-// Listen for messages from popup
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Only respond if we are the top frame OR we have elements to fill
-  // This prevents empty iframes (like tracking pixels or ads) from hijacking the response
-  const isTopFrame = window.self === window.top;
-  const hasElements = formFiller.hasFormElements();
-  
-  if (!isTopFrame && !hasElements) {
-    return false; // Don't handle this message, let other frames (like the main one) respond
-  }
-
-  if (message.action === 'startFilling') {
-    formFiller.startFilling().then((filled) => {
-      sendResponse({ success: true, filledCount: filled });
-    }).catch((error) => {
-      sendResponse({ success: false, error: String(error) });
-    });
-    return true; // Keep channel open for async response
-  }
-
-  if (message.action === 'getStatus') {
-    sendResponse(formFiller.getStatus());
-    return true;
-  }
-});
-
-// Also expose a global function for manual triggering
-(window as any).startFormFilling = () => {
-  formFiller.startFilling();
+__w.__formAutopilotFormFiller = formFiller;
+__w.startFormFilling = () => {
+  void (__w.__formAutopilotFormFiller as FormFiller).startFilling();
 };
+__w.startFormFillingAsync = () => (__w.__formAutopilotFormFiller as FormFiller).startFilling();
+__w.getFormFillerStatus = () => (__w.__formAutopilotFormFiller as FormFiller).getStatus();
+
+if (!__w.__formAutopilotListenerBound) {
+  __w.__formAutopilotListenerBound = true;
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    const filler = __w.__formAutopilotFormFiller as FormFiller | undefined;
+    if (!filler) return false;
+
+    const isTopFrame = window.self === window.top;
+    if (!isTopFrame && !filler.hasFormElements()) {
+      return false;
+    }
+
+    if (message.action === 'startFilling') {
+      filler.startFilling().then((filled) => {
+        sendResponse({ success: true, filledCount: filled });
+      }).catch((error) => {
+        sendResponse({ success: false, error: String(error) });
+      });
+      return true;
+    }
+
+    if (message.action === 'getStatus') {
+      sendResponse(filler.getStatus());
+      return true;
+    }
+  });
+}
 
 if (window.self === window.top) {
   printLog('Form filler content script loaded');

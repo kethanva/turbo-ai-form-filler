@@ -7,16 +7,26 @@ let defaultQuestions: JsonRecord | null = null;
 
 async function loadDefaults(): Promise<void> {
   try {
-    const personalsUrl = chrome.runtime.getURL('config/personals.json');
     const questionsUrl = chrome.runtime.getURL('config/questions.json');
+    const personalsCandidates = [
+      chrome.runtime.getURL('config/personals.json'),
+      chrome.runtime.getURL('config/personals.example.json'),
+    ];
 
-    const [personalsRes, questionsRes] = await Promise.all([
-      fetch(personalsUrl),
-      fetch(questionsUrl)
-    ]);
-
-    defaultPersonals = await personalsRes.json();
+    const questionsRes = await fetch(questionsUrl);
     defaultQuestions = await questionsRes.json();
+
+    for (const url of personalsCandidates) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          defaultPersonals = await res.json();
+          break;
+        }
+      } catch {
+        // try next candidate
+      }
+    }
   } catch (e) {
     console.error('Failed to load default configs:', e);
   }
@@ -140,13 +150,16 @@ function saveSecrets(): void {
   const groqKey = (document.getElementById('groqApiKey') as HTMLInputElement).value.trim();
   const hfKey = (document.getElementById('hfApiKey') as HTMLInputElement).value.trim();
 
-  // Validation
-  if (groqKey && groqKey.length > 0 && groqKey.length <= 8) {
-    showStatus('secretsStatus', 'Groq API Key must be more than 8 characters!', true);
+  // Validation — require known vendor prefixes when a key is provided
+  const groqKeyPattern = /^gsk_[A-Za-z0-9]{20,}$/;
+  const hfKeyPattern = /^hf_[A-Za-z0-9]{20,}$/;
+
+  if (groqKey && !groqKeyPattern.test(groqKey)) {
+    showStatus('secretsStatus', 'Groq API Key must start with gsk_ and be a valid key length.', true);
     return;
   }
-  if (hfKey && hfKey.length > 0 && hfKey.length <= 8) {
-    showStatus('secretsStatus', 'HuggingFace API Key must be more than 8 characters!', true);
+  if (hfKey && !hfKeyPattern.test(hfKey)) {
+    showStatus('secretsStatus', 'HuggingFace API Key must start with hf_ and be a valid key length.', true);
     return;
   }
 
@@ -160,10 +173,10 @@ function saveSecrets(): void {
     updatedSecrets.huggingface_model = (document.getElementById('hfModel') as HTMLInputElement).value.trim();
     updatedSecrets.huggingface_api_url = (document.getElementById('hfApiUrl') as HTMLInputElement).value.trim();
 
-    if (groqKey.length > 8) {
+    if (groqKey) {
       updatedSecrets.groq_api_key = groqKey;
     }
-    if (hfKey.length > 8) {
+    if (hfKey) {
       updatedSecrets.huggingface_api_key = hfKey;
     }
 

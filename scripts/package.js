@@ -29,7 +29,9 @@ const INCLUDE = [
 const CONFIG_FILES = [
   { src: 'config/questions.json',         dest: 'config/questions.json' },
   { src: 'config/personals.example.json', dest: 'config/personals.json' },
+  { src: 'config/personals.example.json', dest: 'config/personals.example.json' },
   { src: 'config/secrets.example.json',   dest: 'config/secrets.json'   },
+  { src: 'config/secrets.example.json',   dest: 'config/secrets.example.json' },
 ];
 
 function run(cmd, cwd = ROOT) {

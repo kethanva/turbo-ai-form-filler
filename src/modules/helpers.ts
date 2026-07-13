@@ -58,3 +58,28 @@ export function convertToJson(text: string): any {
   return null;
 }
 
+export async function proxyFetch(url: string, options: any = {}): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ action: 'proxyFetch', url, options }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (response && response.error) {
+        reject(new Error(response.error));
+        return;
+      }
+      if (!response) {
+        reject(new Error('No response from background script'));
+        return;
+      }
+
+      // Reconstruct Response object
+      resolve(new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers
+      }));
+    });
+  });
+}

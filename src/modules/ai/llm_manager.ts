@@ -1,9 +1,9 @@
 // Converted from modules/ai/llm_manager.py
-import { Secrets, loadSecrets, loadPersonals, getPersonalsSync } from '../config_loader.js';
+import { Secrets, loadSecrets, loadPersonals, getPersonalsSync, hasConfiguredApiKeys } from '../config_loader.js';
 import { groqCreateClient, groqAnswerQuestion, groqExtractSkills, GroqClient } from './groqConnections.js';
 import { huggingfaceCreateClient, huggingfaceAnswerQuestion, huggingfaceExtractSkills, HuggingFaceClient } from './huggingfaceConnections.js';
 import { fuzzyAnswerQuestion, fuzzyExtractSkills } from '../fuzzy_matcher.js';
-import { printLog } from '../helpers.js';
+import { printLog, proxyFetch } from '../helpers.js';
 
 interface LLMClients {
   groq: GroqClient | null;
@@ -29,35 +29,46 @@ export class LLMManager {
   }
 
   /**
-   * Removes duplicate items from comma-separated responses (fixes LLM repetition loop)
+   * Removes duplicate items from comma-separated multi-select answers only.
+   * Never rewrite free-text sentences that happen to contain commas.
    */
-  private deduplicateResponse(answer: string): string {
-    // Check if it looks like a comma-separated list
-    if (answer.includes(',')) {
-      const items = answer.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  private deduplicateResponse(answer: string, questionType: string): string {
+    if (questionType !== 'multiple_select' && questionType !== 'checkbox') {
+      return answer;
+    }
+    if (!answer.includes(',')) {
+      return answer;
+    }
 
-      // Only deduplicate if there are duplicates
-      const uniqueItems = [...new Set(items)];
-      if (uniqueItems.length < items.length) {
-        printLog(`🔧 Deduplicated response: ${items.length} items → ${uniqueItems.length} unique items`);
-        return uniqueItems.join(', ');
-      }
+    const items = answer.split(',').map(s => s.trim()).filter(s => s.length > 0);
+    const uniqueItems = [...new Set(items)];
+    if (uniqueItems.length < items.length) {
+      printLog(`🔧 Deduplicated multi-select: ${items.length} items → ${uniqueItems.length} unique items`);
+      return uniqueItems.join(', ');
     }
     return answer;
   }
 
   async initializeClients(secrets: Secrets): Promise<void> {
+    // Only attempt providers that actually have a key — createClient logs a
+    // critical error for missing keys, which is pure noise in fuzzy-only mode.
+    const groqKey = (secrets.groq_api_key || '').trim();
+    const hfKey = (secrets.huggingface_api_key || '').trim();
 
     try {
-      this.clients.groq = groqCreateClient(secrets);
+      this.clients.groq = groqKey ? groqCreateClient(secrets) : null;
     } catch (e) {
       printLog(`Failed to init Groq: ${e}`);
     }
 
     try {
-      this.clients.huggingface = huggingfaceCreateClient(secrets);
+      this.clients.huggingface = hfKey ? huggingfaceCreateClient(secrets) : null;
     } catch (e) {
       printLog(`Failed to init HuggingFace: ${e}`);
+    }
+
+    if (!groqKey && !hfKey) {
+      printLog('No LLM API keys configured — answers will come from offline fuzzy matching.');
     }
   }
 
@@ -82,39 +93,46 @@ export class LLMManager {
     }
 
     const secrets = await loadSecrets();
+
+    // Fuzzy-only mode: no keys means no provider can ever answer — skip the
+    // provider loop entirely instead of erroring per field.
+    if (!hasConfiguredApiKeys(secrets)) {
+      return this.fuzzyAnswer(question, options, jobDescription);
+    }
+
     const personalsData = getPersonalsSync() || await loadPersonals();
 
-    // ENHANCEMENT: If question targets a specific Entry (e.g., "[Entry: 2]"), 
-    // inject the structured data context to ensure correct indexing.
-    // This fixes the issue where single re-asks (e.g. for dropdowns) lose context and default to Entry 1.
-    let finalUserInfo = userInformationAll || configContext;
+    // Always inject structured Entry arrays when the question targets a repeating section,
+    // even if user_information_all is present (free-text alone loses indexing).
+    let finalUserInfo = userInformationAll || configContext || JSON.stringify(personalsData);
+    const hasEntryRef =
+      /\[\s*(?:(?:Position|Education)\s+)?Entry:\s*\d+\s*\]/i.test(question) ||
+      /(?:position|education)\s+entry[:\s]*\d+/i.test(question);
 
-    if (!finalUserInfo && question.includes('[Entry:')) {
+    if (hasEntryRef) {
       const experienceData = JSON.stringify(personalsData.experience_details || [], null, 2);
       const educationData = JSON.stringify(personalsData.education_details || [], null, 2);
 
       finalUserInfo = `
 === STRUCTURED DATA FOR REPEATING SECTIONS ===
 
-**EXPERIENCE_DETAILS** (use for Work Experience questions):
+**EXPERIENCE_DETAILS** (use for [Position Entry: N] / Work Experience):
 ${experienceData}
 
-**EDUCATION_DETAILS** (use for Education questions):
+**EDUCATION_DETAILS** (use for [Education Entry: N] / Education):
 ${educationData}
 
 **CRITICAL INDEXING INSTRUCTIONS:**
-- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
-- "Company [Entry: 2]" -> experience_details[1].companyKey
-- "School [Entry: 2]" -> education_details[1].institution
+- Array indices are 0-based. [Entry: N] / [Position Entry: N] / [Education Entry: N] → index (N - 1).
+- [Position Entry: N] → experience_details[N-1]
+- [Education Entry: N] → education_details[N-1]
 - DO NOT use the first entry if the question asks for Entry 2, 3, etc.
 - If the requested index does not exist in the array, return "N/A".
 
 === General Context ===
-${JSON.stringify(personalsData)}
+${finalUserInfo}
 `;
-      printLog(`🔧 Injected structured context for Entry-based question: "${question}"`);
-    } else if (!finalUserInfo) {
-      finalUserInfo = JSON.stringify(personalsData);
+      printLog(`🔧 Injected structured context for Entry-based question: "${question.substring(0, 80)}"`);
     }
 
     // Try providers in order starting from current fallback index
@@ -171,10 +189,8 @@ ${JSON.stringify(personalsData)}
             continue;
           }
 
-          // Deduplicate comma-separated lists (fixes LLM repetition loop issue)
-          let cleanedAnswer = this.deduplicateResponse(answer);
-
-          //printLog(`✅ LLM Successfully answered with ${provider}: ${cleanedAnswer.substring(0, 100)}...`);
+          // Deduplicate only multi-select / checkbox list answers
+          const cleanedAnswer = this.deduplicateResponse(answer, questionType);
           return cleanedAnswer;
         } else {
           if (answer === null) {
@@ -204,12 +220,17 @@ ${JSON.stringify(personalsData)}
     }
 
     // If all providers failed
+    const anyClientConfigured = !!(this.clients.groq || this.clients.huggingface);
     printLog("All LLM providers failed. Trying Fuzzy Logic.");
     const fuzzyAns = this.fuzzyAnswer(question, options, jobDescription);
 
-    // Activate Cooldown (2 minutes)
-    printLog("Activating 2 minute cooldown for LLMs.");
-    this.cooldownEndTime = new Date(Date.now() + 2 * 60 * 1000);
+    // Only cooldown on real provider failures (rate limits / outages), not missing API keys.
+    if (anyClientConfigured) {
+      printLog("Activating 2 minute cooldown for LLMs.");
+      this.cooldownEndTime = new Date(Date.now() + 2 * 60 * 1000);
+    } else {
+      printLog("Skipping LLM cooldown — no API clients configured. Add keys in Options.");
+    }
     this.currentFallbackIndex = 0;
 
     if (fuzzyAns && typeof fuzzyAns === 'string' && fuzzyAns.trim().length > 0) {
@@ -220,14 +241,15 @@ ${JSON.stringify(personalsData)}
     return null;
   }
 
-  // Batch answer multiple questions in a single LLM call for speed
+  // Batch answer multiple questions in a single LLM call for speed.
+  // Returns answers keyed by question index to avoid collisions on duplicate labels.
   async getBatchAnswers(
     questionsList: { question: string; options?: string[]; questionType?: string }[],
     jobDescription?: string,
     userInformationAll?: string,
     configContext?: string
-  ): Promise<Map<string, string>> {
-    const results = new Map<string, string>();
+  ): Promise<Map<number, string>> {
+    const results = new Map<number, string>();
 
     if (questionsList.length === 0) return results;
 
@@ -239,6 +261,13 @@ ${JSON.stringify(personalsData)}
     if (this.cooldownEndTime && new Date() >= this.cooldownEndTime) {
       this.cooldownEndTime = null;
       this.currentFallbackIndex = 0;
+    }
+
+    // No clients → no provider can answer the batch; per-field fuzzy fallback
+    // in the caller handles it. Skip building the (large) batch prompt.
+    if (!this.clients.groq && !this.clients.huggingface) {
+      printLog('Batch skipped: no LLM clients — falling back to per-field matching.');
+      return results;
     }
 
     // Build a combined prompt for all questions
@@ -266,45 +295,43 @@ ${educationData}
 === CRITICAL INSTRUCTIONS ===
 
 **ARRAY INDEXING (READ THIS CAREFULLY)**:
-JavaScript arrays start at index 0. To find the correct entry:
-- [Entry: 1] = experience_details[0] or education_details[0]
-- [Entry: 2] = experience_details[1] or education_details[1]
-- [Entry: 3] = experience_details[2] or education_details[2]  
-- [Entry: 4] = experience_details[3] or education_details[3]
-- [Entry: 5] = experience_details[4] or education_details[4]
-- [Entry: 6] = experience_details[5] or education_details[5]
-**Formula: array[Entry_Number - 1]**
+JavaScript arrays start at index 0. Formula: array[Entry_Number - 1]
+- [Position Entry: N] or Work/Professional Experience → experience_details[N-1]
+- [Education Entry: N] or Education/School → education_details[N-1]
+- Bare [Entry: N] → use experience_details for job fields, education_details for school/degree fields
 
 1. **FOR ANY QUESTION WITH [Entry: X]**: Extract ONLY from the arrays above.
-   - "Start Date [Entry: 6]" → experience_details[5].from → "2010-06" → "06/01/2010"
-   - "Employer [Entry: 6]" → experience_details[5].companyKey → "company_b" (NOT "company_a"!)
-   - "End Year [Entry: 1]" → education_details[0].to → "2018-05" → "2018"
+   - Look up array index (Entry_Number - 1) and return that entry's real field values.
+   - Job Title → .title | Company/Employer → .companyKey | Location → .location
+   - School → .institution | Degree → .degree | Field → .field
    - DO NOT use any data from the "General Context" section below
-   - DO NOT use highlights, industry, description, or any text data
+   - DO NOT invent companies, titles, or dates
+   - DO NOT copy example dates from these instructions — only use values from the JSON arrays
 
-2. **DATE FIELDS**: For "Start Date" or "End Date" questions:
-   - Extract from the .from or .to field in the JSON array
-   - **CRITICAL**: Convert YYYY-MM format to MM/01/YYYY
-   - **CRITICAL**: If the value is "Present", you MUST return "${presentDateStr}" (the last day of the current year). Do NOT return the entry's "from" date.
-   
-   **EXAMPLES**:
-   - "From [Entry: 1]" → experience_details[0].from → "2020-08" → return "08/01/2020"
-   - "To [Entry: 1]"   → experience_details[0].to   → "Present"  → return "${presentDateStr}" (NOT "08/01/2020"! That is the From date, not the To date.)
-   - "From [Entry: 2]" → experience_details[1].from → "2017-04" → return "04/01/2017"
-   - "To [Entry: 2]"   → experience_details[1].to   → "2020-07" → return "07/01/2020" (Entry 2 ended one month before Entry 1 started)
-   - "From [Entry: 3]" → experience_details[2].from → "2014-09" → return "09/01/2014"
-   - "To [Entry: 3]"   → experience_details[2].to   → "2017-03" → return "03/01/2017" (NOT "09/01/2014"! That is the From date.)
+2. **ROLE DESCRIPTION / JOB DESCRIPTION / RESPONSIBILITIES**:
+   - For "Role Description [Entry: N]", "Job Description", "Responsibilities", or similar:
+   - Take experience_details[N-1].highlights and join ALL items as bullet points (one per line)
+   - NEVER return only the first highlight
+   - NEVER return the job title or company name as the description
 
-3. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
+3. **DATE FIELDS**: For "Start Date" / "From" or "End Date" / "To" questions:
+   - Extract from the matching entry's .from or .to field in the JSON array
+   - Normalize to MM/YYYY (e.g. "02-2022" or "2022-02" → "02/2022")
+   - If .to is "Present"/"Current"/"Ongoing": return "N/A" for End Date (the "currently work here" checkbox handles it). Do NOT invent ${presentDateStr} or any calendar end date.
+   - [Position Entry: N] dates come from experience_details; [Education Entry: N] from education_details
+   - NEVER reuse another entry's dates
+   - NEVER swap From and To
+
+4. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
    - Extract from the .from or .to field in the JSON array
    - Return only the year portion (e.g., "2021-10" → "2021")
 
-4. **LOCATION FIELDS**: 
+5. **LOCATION FIELDS**: 
    - **IF AND ONLY IF** the question asks for "Location", "City", "Place", or "Address" (specifically for Work/Education):
    - **THEN** return the location from user profile (e.g. "San Francisco, USA").
-   - **CRITICAL EXCEPTION**: If the question asks for "Salary", "CTC", "Compensation", or "Pay", SKIP this rule and see Rule 5.
+   - **CRITICAL EXCEPTION**: If the question asks for "Salary", "CTC", "Compensation", or "Pay", SKIP this rule and see Rule 6.
    
-5. **SALARY / CTC / COMPENSATION FIELDS**:
+6. **SALARY / CTC / COMPENSATION FIELDS**:
    - Look for keywords: "CTC", "Salary", "Compensation", "Remuneration", "Pay".
    - Answer with the **numeric value only** from the user data (e.g. 80000).
    - Do NOT add currency symbols unless asked.
@@ -315,45 +342,34 @@ JavaScript arrays start at index 0. To find the correct entry:
    - "Expected Salary?" → "85000"
    - "What is your current Location?" → "San Francisco, USA"
 
-6. **NOTICE PERIOD**:
+7. **NOTICE PERIOD**:
     - "Notice Period" -> Extract from "Notice Period" or "soon_join_us" (e.g. "60 days")
 
-7. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
+8. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
 
-8. **VISA / SPONSORSHIP FIELDS**:
+9. **VISA / SPONSORSHIP FIELDS**:
    - If question asks about requiring Visa Sponsorship now or in future -> Answer based on user info (e.g., "No" if sponsorship_required is false)
    - If question asks about Work Authorization -> Answer "Yes" if authorized
 
-9. **DEMOGRAPHIC FIELDS (RACE, GENDER, VETERAN, DISABILITY)**:
+10. **DEMOGRAPHIC FIELDS (RACE, GENDER, VETERAN, DISABILITY)**:
    - Extract explicitly from user info (e.g. "gender", "veteran_status").
    - If the exact race is not in the JSON but nationality is (e.g. "citizen_of_india": true), you can infer race (e.g., "Asian").
    - If disability status is false, select the option indicating no disability.
    - If information is completely missing and cannot be inferred, answer "Decline To Self Identify" or "I do not wish to answer" instead of "N/A".
 
-10. **IF [Entry: X] is missing**: Return "N/A"
+11. **IF [Entry: X] is missing**: Return "N/A"
+
+12. **SIGNATURE / PRINTED NAME**:
+   - For "Signature", "Signature and Date", "Printed Name", or "Full Legal Name": return the applicant's full name from user info.
+   - If the field also asks for a date, append today's date as MM/DD/YYYY.
+   - NEVER echo the legal/certification paragraph or question text as the answer.
+
+**CRITICAL INDEXING REMINDER:**
+- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
+- DO NOT return the entry number literally — look up the actual value in the array.
 
 === General Context (use only for non-[Entry: X] questions) ===
 ${userInfo}
-`;
-
-    // Inject the USER'S actual structured data (from their profile) for [Entry: X] questions.
-    // Never hardcode — the earlier experienceData / educationData come straight from personalsData.
-    batchPrompt += `
-
-=== STRUCTURED DATA FOR REPEATING SECTIONS ===
-
-**EXPERIENCE_DETAILS** (use for Work Experience questions):
-${experienceData}
-
-**EDUCATION_DETAILS** (use for Education questions):
-${educationData}
-
-**CRITICAL INDEXING INSTRUCTIONS:**
-- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
-- "Company [Entry: 2]" -> experience_details[1].companyKey
-- "School [Entry: 1]" -> education_details[0].institution
-- DO NOT return the entry number literally — look up the actual value in the array.
-- If the requested index does not exist in the array, return "N/A".
 `;
 
     batchPrompt += `
@@ -375,29 +391,52 @@ Questions:
       }
     });
 
-    batchPrompt += `\n\nProvide ONLY the answers, one per line, in the format Q1: answer, Q2: answer, etc. Be concise.`;
+    batchPrompt += `\n\nProvide ONLY the answers. You may use multiple lines for an answer if needed (e.g., for descriptions or cover letters). Start each new answer exactly with the Q number (e.g., "Q1: ").`;
 
     // Helper function to parse LLM response
     const parseResponse = (content: string): void => {
       const lines = content.split('\n');
       const matchedIndices = new Set<number>();
+      
+      let currentIdx = -1;
+      let currentAnswer: string[] = [];
 
       lines.forEach((line: string) => {
-        // Try multiple patterns for parsing
-        let match = line.match(/^Q(\d+):\s*(.+)/i);
+        // Only treat "QN:" as a question boundary.
+        // Do NOT match "1. bullet point" — that truncates multi-line role descriptions.
+        let match = line.match(/^Q(\d+):\s*(.*)/i);
         if (!match) {
-          // Try alternate format: "1: answer" or "1. answer"
-          match = line.match(/^(\d+)[.:]\s*(.+)/);
-        }
-        if (match) {
-          const idx = parseInt(match[1]) - 1;
-          const answer = match[2].trim();
-          if (idx >= 0 && idx < questionsList.length && answer.length > 0) {
-            results.set(questionsList[idx].question, answer);
-            matchedIndices.add(idx);
+          // Allow "N:" only when N is in range and not already answered (never "N.")
+          const alt = line.match(/^(\d+):\s*(.*)/);
+          if (alt) {
+            const n = parseInt(alt[1], 10);
+            if (n >= 1 && n <= questionsList.length && !matchedIndices.has(n - 1) && n - 1 !== currentIdx) {
+              match = alt;
+            }
           }
         }
+        
+        if (match) {
+          // Save previous answer
+          if (currentIdx !== -1 && currentAnswer.length > 0) {
+            results.set(currentIdx, currentAnswer.join('\n').trim());
+            matchedIndices.add(currentIdx);
+          }
+          
+          currentIdx = parseInt(match[1]) - 1;
+          const answerText = match[2].trim();
+          currentAnswer = answerText.length > 0 ? [answerText] : [];
+        } else if (currentIdx !== -1) {
+          // Accumulate multi-line answer for the current question
+          currentAnswer.push(line);
+        }
       });
+      
+      // Save the last answer
+      if (currentIdx !== -1 && currentAnswer.length > 0) {
+        results.set(currentIdx, currentAnswer.join('\n').trim());
+        matchedIndices.add(currentIdx);
+      }
 
       // Log unmatched questions for debugging
       const unmatchedQuestions: string[] = [];
@@ -420,7 +459,7 @@ Questions:
 
 
         if (provider === "groq") {
-          const response = await fetch((client as GroqClient).api_url, {
+          const response = await proxyFetch((client as GroqClient).api_url, {
             method: 'POST',
             headers: {
               "Authorization": `Bearer ${(client as GroqClient).token}`,
@@ -452,7 +491,7 @@ Questions:
           }
         } else if (provider === "huggingface") {
           const hfClient = client as HuggingFaceClient;
-          const response = await fetch(hfClient.api_url, {
+          const response = await proxyFetch(hfClient.api_url, {
             method: 'POST',
             headers: {
               "Authorization": `Bearer ${hfClient.token}`,

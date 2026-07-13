@@ -1,6 +1,6 @@
 // Converted from modules/ai/connections/huggingfaceConnections.py
 import { Secrets } from '../config_loader.js';
-import { printLog, criticalErrorLog } from '../helpers.js';
+import { printLog, criticalErrorLog, proxyFetch } from '../helpers.js';
 
 export interface HuggingFaceClient {
   token: string;
@@ -119,7 +119,7 @@ Question: ${question}
     };
 
     // Make API request
-    const response = await fetch(client.api_url, {
+    const response = await proxyFetch(client.api_url, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(payload)
@@ -197,7 +197,7 @@ export async function huggingfaceExtractSkills(
       temperature: 0.3
     };
 
-    const response = await fetch(client.api_url, {
+    const response = await proxyFetch(client.api_url, {
       method: 'POST',
       headers: headers,
       body: JSON.stringify(payload)
