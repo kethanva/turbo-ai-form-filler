@@ -1,43 +1,12 @@
 // Converted from modules/ai/connections/groqConnections.py
-import { Secrets, loadQuestions, getQuestionsSync } from '../config_loader.js';
-import { printLog, criticalErrorLog, proxyFetch } from '../helpers.js';
+import { loadQuestions, getQuestionsSync } from '../config_loader.js';
+import { printLog, criticalErrorLog, callLLM, fillTemplate } from '../helpers.js';
 
+// Only the model name lives in content-script memory. The API key and
+// endpoint URL stay in the background service worker (see background.ts
+// llmRequest handler) — content never sees key material.
 export interface GroqClient {
-  token: string;
-  api_url: string;
   model: string;
-}
-
-export function groqCreateClient(secrets: Secrets): GroqClient | null {
-  try {
-
-    if (!secrets.use_AI) {
-      throw new Error("AI is not enabled! Please enable it by setting use_AI = true in secrets");
-    }
-
-    const groqToken = secrets.groq_api_key || '';
-    const modelName = secrets.groq_model || 'llama-3.1-8b-instant';
-    const apiUrl = secrets.groq_api_url || 'https://api.groq.com/openai/v1/chat/completions';
-
-    if (!groqToken || groqToken === '') {
-      throw new Error(
-        "Groq API key is not configured!\n" +
-        "Get your API key from: https://console.groq.com/keys\n" +
-        "Then set it in extension settings"
-      );
-    }
-
-    printLog(`✓ Groq client ready (${modelName})`);
-
-    return {
-      token: groqToken.trim(),
-      api_url: apiUrl,
-      model: modelName
-    };
-  } catch (e) {
-    criticalErrorLog("Error occurred while creating Groq client.", e);
-    return null;
-  }
 }
 
 export async function groqAnswerQuestion(
@@ -58,7 +27,7 @@ export async function groqAnswerQuestion(
     // Build prompt using shared template
     const questions = getQuestionsSync() || await loadQuestions();
     const userInfo = userInformationAll || configFilesContent || "N/A";
-    let prompt = questions.ai_answer_prompt.replace('{}', userInfo).replace('{}', question);
+    let prompt = fillTemplate(questions.ai_answer_prompt, userInfo, question);
 
     // Add optional context
     if (jobDescription && jobDescription !== "Unknown") {
@@ -83,12 +52,6 @@ export async function groqAnswerQuestion(
 
     prompt += "\n\nYour answer (be concise):";
 
-    // Prepare request
-    const headers = {
-      "Authorization": `Bearer ${client.token}`,
-      "Content-Type": "application/json"
-    };
-
     const payload = {
       model: client.model,
       messages: [
@@ -98,12 +61,8 @@ export async function groqAnswerQuestion(
       temperature: 0.1
     };
 
-    // Make API request
-    const response = await proxyFetch(client.api_url, {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify(payload)
-    });
+    // Make API request via background (background injects the API key)
+    const response = await callLLM('groq', payload);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -138,60 +97,3 @@ export async function groqAnswerQuestion(
     return null;
   }
 }
-
-export async function groqExtractSkills(
-  client: GroqClient | null,
-  jobDescription: string
-): Promise<any> {
-  if (!client) {
-    printLog("Groq client is not available for skill extraction.");
-    return {};
-  }
-
-  try {
-    const questions = getQuestionsSync() || await loadQuestions();
-    const prompt = questions.extract_skills_prompt.replace('{}', jobDescription);
-
-    const headers = {
-      "Authorization": `Bearer ${client.token}`,
-      "Content-Type": "application/json"
-    };
-
-    const payload = {
-      model: client.model,
-      messages: [
-        { role: "user", content: prompt }
-      ],
-      max_tokens: 1024,
-      temperature: 0.1,
-      response_format: { type: "json_object" }
-    };
-
-    const response = await proxyFetch(client.api_url, {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify(payload)
-    });
-
-    if (response.ok) {
-      const result = await response.json();
-      if (result.choices && result.choices.length > 0) {
-        const content = result.choices[0].message.content;
-        try {
-          return JSON.parse(content);
-        } catch {
-          return { skills: content };
-        }
-      }
-      return {};
-    } else {
-      const errorText = await response.text();
-      printLog(`Groq API Error ${response.status}: ${errorText.substring(0, 200)}`);
-      return {};
-    }
-  } catch (e) {
-    printLog(`Error extracting skills with Groq: ${e}`);
-    return {};
-  }
-}
-

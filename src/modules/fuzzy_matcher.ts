@@ -1,5 +1,6 @@
 // Converted from modules/fuzzy_matcher.py
-import { getPersonalsSync, Personals } from './config_loader.js';
+import { getPersonalsSync } from './config_loader.js';
+import { textualMatch } from './helpers.js';
 
 interface FuzzyMatcherData {
   [key: string]: any;
@@ -199,6 +200,16 @@ class FuzzyMatcher {
   }
 
   private mapValueToOptions(value: any, options: string[]): string | null {
+    // Boolean profile fields (e.g. sponsorship_required: false) don't map to
+    // "true"/"false" text anywhere on a form — they map to Yes/No options.
+    // Without this, every boolean-backed Yes/No question fell through to the
+    // fuzzy-ratio check below and failed outright.
+    if (typeof value === 'boolean') {
+      const target = value ? 'yes' : 'no';
+      const hit = options.find(opt => opt.toLowerCase().trim() === target);
+      if (hit) return hit;
+    }
+
     const valStr = String(value).toLowerCase();
 
     // Exact match
@@ -208,9 +219,11 @@ class FuzzyMatcher {
       }
     }
 
-    // Partial match
+    // Whole-word partial match. Plain bidirectional substring containment
+    // (valStr.includes(opt) || opt.includes(valStr)) matches "male" inside
+    // "female" and silently selects the wrong option — see H1.
     for (const opt of options) {
-      if (valStr.includes(opt.toLowerCase()) || opt.toLowerCase().includes(valStr)) {
+      if (textualMatch(valStr, opt)) {
         return opt;
       }
     }
@@ -232,11 +245,6 @@ class FuzzyMatcher {
 
     return null;
   }
-
-  extractSkills(_description: string): string[] {
-    // Fuzzy skill extraction is not implemented; callers treat [] as "no match".
-    return [];
-  }
 }
 
 // Global instance
@@ -249,9 +257,5 @@ export function fuzzyAnswerQuestion(
   jobDescription: string = ""
 ): string | null {
   return fuzzyMatcher.answerQuestion(question, options, questionType, jobDescription);
-}
-
-export function fuzzyExtractSkills(description: string): string[] {
-  return fuzzyMatcher.extractSkills(description);
 }
 

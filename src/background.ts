@@ -1,5 +1,5 @@
 // Background service worker
-export { };  // Force ES module output
+import { loadSecrets, Secrets } from './modules/config_loader.js';
 
 const ALLOWED_FETCH_HOSTS = new Set([
   'api.groq.com',
@@ -9,16 +9,17 @@ const ALLOWED_FETCH_HOSTS = new Set([
 const CONTENT_SCRIPT_FILE = 'dist/content.bundle.js';
 
 // Packaged config files content scripts may request via loadBundledConfig.
-// Content scripts cannot fetch packaged files themselves (no web_accessible_resources).
+// secrets.json is deliberately NOT here: content scripts get provider
+// availability (booleans + model names) via getProviderAvailability and make
+// LLM calls via llmRequest — they never receive raw key material, so they
+// have no legitimate reason to fetch the secrets file itself.
 const BUNDLED_CONFIG_FILES = new Set([
-  'secrets.json',
-  'secrets.example.json',
   'personals.json',
   'personals.example.json',
   'questions.json',
 ]);
 
-function isAllowedProxyUrl(rawUrl: unknown): boolean {
+function isAllowedProviderUrl(rawUrl: unknown): boolean {
   if (typeof rawUrl !== 'string' || !rawUrl) return false;
   try {
     const parsed = new URL(rawUrl);
@@ -27,6 +28,17 @@ function isAllowedProxyUrl(rawUrl: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+/** Resolve {url, key} for a provider name from secrets. Never exposed to content scripts. */
+function resolveProviderConfig(provider: unknown, secrets: Secrets): { url: string; key: string } | null {
+  if (provider === 'groq') {
+    return { url: secrets.groq_api_url, key: (secrets.groq_api_key || '').trim() };
+  }
+  if (provider === 'huggingface') {
+    return { url: secrets.huggingface_api_url, key: (secrets.huggingface_api_key || '').trim() };
+  }
+  return null;
 }
 
 async function loadBundledJson<T>(relativePath: string): Promise<T | null> {
@@ -83,7 +95,9 @@ async function injectContentScripts(tabId: number): Promise<void> {
 }
 
 /**
- * Inject (idempotent) into all frames, then run fill and sum filled counts.
+ * Inject (idempotent) into all frames, then broadcast startFilling.
+ * Every frame with forms fills itself; the returned count comes from the
+ * first frame that responds (Chrome keeps only the first sendResponse).
  */
 async function startFillingInTab(tabId: number): Promise<{ success: boolean; filledCount: number; error?: string }> {
   try {
@@ -190,26 +204,53 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
-  // Proxy fetch from content script to bypass page CSP — allowlisted hosts only
-  if (message?.action === 'proxyFetch') {
-    if (!isAllowedProxyUrl(message.url)) {
-      sendResponse({ error: 'proxyFetch blocked: URL host is not allowlisted' });
-      return false;
-    }
+  // Content script asks which providers are usable — booleans + model names
+  // only, never the actual key value.
+  if (message?.action === 'getProviderAvailability') {
+    loadSecrets().then((secrets) => {
+      sendResponse({
+        useAI: secrets.use_AI,
+        groqAvailable: (secrets.groq_api_key || '').trim().length > 8,
+        groqModel: secrets.groq_model,
+        hfAvailable: (secrets.huggingface_api_key || '').trim().length > 8,
+        hfModel: secrets.huggingface_model,
+      });
+    });
+    return true;
+  }
 
-    // Only forward a safe subset of fetch options
-    const incoming = message.options && typeof message.options === 'object' ? message.options : {};
-    const headers = incoming.headers && typeof incoming.headers === 'object' ? incoming.headers : {};
-    const safeOptions: RequestInit = {
-      method: typeof incoming.method === 'string' ? incoming.method : 'GET',
-      headers,
-      body: typeof incoming.body === 'string' ? incoming.body : undefined,
-      redirect: 'error',
-      credentials: 'omit',
-    };
-
-    fetch(message.url, safeOptions)
-      .then(async (res) => {
+  // Content script asks background to perform an LLM chat-completion call.
+  // Background resolves the endpoint URL and injects the Authorization
+  // header itself from secrets — the API key never crosses into the content
+  // script's (page-adjacent, isolated-world) JS heap.
+  if (message?.action === 'llmRequest') {
+    loadSecrets().then(async (secrets) => {
+      if (!secrets.use_AI) {
+        sendResponse({ error: 'llmRequest blocked: AI is disabled in settings' });
+        return;
+      }
+      const cfg = resolveProviderConfig(message.provider, secrets);
+      if (!cfg || !isAllowedProviderUrl(cfg.url)) {
+        sendResponse({ error: 'llmRequest blocked: unknown or disallowed provider' });
+        return;
+      }
+      if (!cfg.key) {
+        sendResponse({ error: 'llmRequest blocked: no API key configured for this provider' });
+        return;
+      }
+      const body = message.body && typeof message.body === 'object' ? message.body : {};
+      try {
+        const res = await fetch(cfg.url, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${cfg.key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          redirect: 'error',
+          credentials: 'omit',
+          signal: AbortSignal.timeout(30_000),
+        });
         const text = await res.text();
         const responseHeaders: Record<string, string> = {};
         res.headers.forEach((val, key) => { responseHeaders[key] = val; });
@@ -219,10 +260,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           headers: responseHeaders,
           body: text,
         });
-      })
-      .catch((err) => {
+      } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
-      });
+      }
+    });
     return true;
   }
 

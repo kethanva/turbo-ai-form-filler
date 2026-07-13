@@ -1,9 +1,9 @@
 // Converted from modules/ai/llm_manager.py
-import { Secrets, loadSecrets, loadPersonals, getPersonalsSync, hasConfiguredApiKeys } from '../config_loader.js';
-import { groqCreateClient, groqAnswerQuestion, groqExtractSkills, GroqClient } from './groqConnections.js';
-import { huggingfaceCreateClient, huggingfaceAnswerQuestion, huggingfaceExtractSkills, HuggingFaceClient } from './huggingfaceConnections.js';
-import { fuzzyAnswerQuestion, fuzzyExtractSkills } from '../fuzzy_matcher.js';
-import { printLog, proxyFetch } from '../helpers.js';
+import { loadPersonals, getPersonalsSync, loadProviderAvailability } from '../config_loader.js';
+import { groqAnswerQuestion, GroqClient } from './groqConnections.js';
+import { huggingfaceAnswerQuestion, HuggingFaceClient } from './huggingfaceConnections.js';
+import { fuzzyAnswerQuestion } from '../fuzzy_matcher.js';
+import { printLog, callLLM } from '../helpers.js';
 
 interface LLMClients {
   groq: GroqClient | null;
@@ -49,25 +49,22 @@ export class LLMManager {
     return answer;
   }
 
-  async initializeClients(secrets: Secrets): Promise<void> {
-    // Only attempt providers that actually have a key — createClient logs a
-    // critical error for missing keys, which is pure noise in fuzzy-only mode.
-    const groqKey = (secrets.groq_api_key || '').trim();
-    const hfKey = (secrets.huggingface_api_key || '').trim();
+  /**
+   * Ask background which providers are configured (booleans + model names —
+   * background never returns the actual key). No arguments: this used to
+   * take a Secrets object built from the raw key value, which meant every
+   * content-script caller had to hold the key in memory just to pass it
+   * through here.
+   */
+  async initializeClients(): Promise<void> {
+    const avail = await loadProviderAvailability();
 
-    try {
-      this.clients.groq = groqKey ? groqCreateClient(secrets) : null;
-    } catch (e) {
-      printLog(`Failed to init Groq: ${e}`);
-    }
+    this.clients.groq = (avail.useAI && avail.groqAvailable) ? { model: avail.groqModel } : null;
+    this.clients.huggingface = (avail.useAI && avail.hfAvailable) ? { model: avail.hfModel } : null;
 
-    try {
-      this.clients.huggingface = hfKey ? huggingfaceCreateClient(secrets) : null;
-    } catch (e) {
-      printLog(`Failed to init HuggingFace: ${e}`);
-    }
-
-    if (!groqKey && !hfKey) {
+    if (!avail.useAI) {
+      printLog('AI is disabled in settings — using offline fuzzy matching only.');
+    } else if (!avail.groqAvailable && !avail.hfAvailable) {
       printLog('No LLM API keys configured — answers will come from offline fuzzy matching.');
     }
   }
@@ -92,11 +89,9 @@ export class LLMManager {
       }
     }
 
-    const secrets = await loadSecrets();
-
-    // Fuzzy-only mode: no keys means no provider can ever answer — skip the
-    // provider loop entirely instead of erroring per field.
-    if (!hasConfiguredApiKeys(secrets)) {
+    // Fuzzy-only mode: no configured/enabled provider can ever answer — skip
+    // the provider loop entirely instead of erroring per field.
+    if (!this.clients.groq && !this.clients.huggingface) {
       return this.fuzzyAnswer(question, options, jobDescription);
     }
 
@@ -138,14 +133,13 @@ ${finalUserInfo}
     // Try providers in order starting from current fallback index
     for (let i = this.currentFallbackIndex; i < this.providerPriority.length; i++) {
       const provider = this.providerPriority[i];
-      let client = this.clients[provider as keyof LLMClients];
+      const client = this.clients[provider as keyof LLMClients];
 
-      if (!client) {
-        // Try to re-init if None
-        await this.initializeClients(secrets);
-        client = this.clients[provider as keyof LLMClients];
-        if (!client) continue;
-      }
+      // Availability is fixed for the run (set once in initializeClients) —
+      // no configured provider is never going to become available mid-run,
+      // so there is nothing to gain from re-initializing per field (that
+      // used to re-log "client ready" / re-throw "no key" once per question).
+      if (!client) continue;
 
       //printLog(`Attempting answer with ${provider}...`);
       try {
@@ -178,12 +172,15 @@ ${finalUserInfo}
         // Validate answer
         printLog(`🔍 LLM Provider ${provider} raw answer: [${answer}] (type: ${typeof answer})`);
         if (answer && typeof answer === 'string' && answer.trim().length > 0) {
-          // Only treat as an error if the whole reply is a short error sentence.
-          // Long answers that merely mention "error" are valid content.
+          // Only treat as an error if the whole reply IS an error sentence
+          // (requires a colon after the keyword). A legitimate answer like
+          // "Error handling is my strength" must never be misread as a
+          // provider failure — that previously triggered a 2-minute global
+          // cooldown off one unlucky answer.
           const trimmed = answer.trim();
           const looksLikeApiError =
             trimmed.length < 200 &&
-            /^(error|api error|failed|exception)\b[:\s]/i.test(trimmed);
+            /^(api\s+error|error|failed|exception)\s*:/i.test(trimmed);
           if (looksLikeApiError) {
             printLog(`LLM Provider ${provider} returned error message: ${trimmed}`);
             continue;
@@ -326,17 +323,17 @@ JavaScript arrays start at index 0. Formula: array[Entry_Number - 1]
    - Extract from the .from or .to field in the JSON array
    - Return only the year portion (e.g., "2021-10" → "2021")
 
-5. **LOCATION FIELDS**: 
+5. **LOCATION FIELDS**:
    - **IF AND ONLY IF** the question asks for "Location", "City", "Place", or "Address" (specifically for Work/Education):
    - **THEN** return the location from user profile (e.g. "San Francisco, USA").
    - **CRITICAL EXCEPTION**: If the question asks for "Salary", "CTC", "Compensation", or "Pay", SKIP this rule and see Rule 6.
-   
+
 6. **SALARY / CTC / COMPENSATION FIELDS**:
    - Look for keywords: "CTC", "Salary", "Compensation", "Remuneration", "Pay".
    - Answer with the **numeric value only** from the user data (e.g. 80000).
    - Do NOT add currency symbols unless asked.
    - Do NOT answer with a city/location.
-   
+
    **EXAMPLES**:
    - "Current CTC?" → "80000"
    - "Expected Salary?" → "85000"
@@ -397,7 +394,7 @@ Questions:
     const parseResponse = (content: string): void => {
       const lines = content.split('\n');
       const matchedIndices = new Set<number>();
-      
+
       let currentIdx = -1;
       let currentAnswer: string[] = [];
 
@@ -415,14 +412,14 @@ Questions:
             }
           }
         }
-        
+
         if (match) {
           // Save previous answer
           if (currentIdx !== -1 && currentAnswer.length > 0) {
             results.set(currentIdx, currentAnswer.join('\n').trim());
             matchedIndices.add(currentIdx);
           }
-          
+
           currentIdx = parseInt(match[1]) - 1;
           const answerText = match[2].trim();
           currentAnswer = answerText.length > 0 ? [answerText] : [];
@@ -431,7 +428,7 @@ Questions:
           currentAnswer.push(line);
         }
       });
-      
+
       // Save the last answer
       if (currentIdx !== -1 && currentAnswer.length > 0) {
         results.set(currentIdx, currentAnswer.join('\n').trim());
@@ -457,70 +454,28 @@ Questions:
         const client = this.clients[provider as keyof LLMClients];
         if (!client) continue;
 
+        const response = await callLLM(provider as 'groq' | 'huggingface', {
+          model: client.model,
+          messages: [{ role: "user", content: batchPrompt }],
+          max_tokens: 4096,
+          temperature: 0.1
+        });
 
-        if (provider === "groq") {
-          const response = await proxyFetch((client as GroqClient).api_url, {
-            method: 'POST',
-            headers: {
-              "Authorization": `Bearer ${(client as GroqClient).token}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model: (client as GroqClient).model,
-              messages: [{ role: "user", content: batchPrompt }],
-              max_tokens: 2048,
-              temperature: 0.1
-            })
-          });
+        if (response.ok) {
+          const result = await response.json();
+          if (result.choices && result.choices.length > 0) {
+            const content = result.choices[0]?.message?.content;
+            if (typeof content === 'string' && content.length > 0) {
+              parseResponse(content);
 
-          if (response.ok) {
-            const result = await response.json();
-            if (result.choices && result.choices.length > 0) {
-              const content = result.choices[0]?.message?.content;
-              if (typeof content === 'string' && content.length > 0) {
-                parseResponse(content);
-
-                if (results.size > 0) {
-                  printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
-                  return results;
-                }
+              if (results.size > 0) {
+                printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
+                return results;
               }
             }
-          } else {
-            printLog(`Batch ${provider} failed with status ${response.status}`);
           }
-        } else if (provider === "huggingface") {
-          const hfClient = client as HuggingFaceClient;
-          const response = await proxyFetch(hfClient.api_url, {
-            method: 'POST',
-            headers: {
-              "Authorization": `Bearer ${hfClient.token}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model: hfClient.model,
-              messages: [{ role: "user", content: batchPrompt }],
-              max_tokens: 2048,
-              temperature: 0.1
-            })
-          });
-
-          if (response.ok) {
-            const result = await response.json();
-            if (result.choices && result.choices.length > 0) {
-              const content = result.choices[0]?.message?.content;
-              if (typeof content === 'string' && content.length > 0) {
-                parseResponse(content);
-
-                if (results.size > 0) {
-                  printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
-                  return results;
-                }
-              }
-            }
-          } else {
-            printLog(`Batch ${provider} failed with status ${response.status}`);
-          }
+        } else {
+          printLog(`Batch ${provider} failed with status ${response.status}`);
         }
       } catch (e) {
         printLog(`Batch ${provider} error: ${e}`);
@@ -532,30 +487,6 @@ Questions:
     return results;
   }
 
-  async extractSkills(description: string): Promise<any> {
-    const secrets = await loadSecrets();
-
-    // Similar fallback logic for skills
-    for (const provider of this.providerPriority) {
-      const client = this.clients[provider as keyof LLMClients];
-      if (!client) continue;
-
-      try {
-        if (provider === "groq") {
-          return await groqExtractSkills(client as GroqClient, description);
-        } else if (provider === "huggingface") {
-          return await huggingfaceExtractSkills(client as HuggingFaceClient, description);
-        }
-      } catch (e) {
-        printLog(`Skill extraction with ${provider} failed: ${e}`);
-        continue;
-      }
-    }
-
-    printLog("All LLMs failed for skill extraction. Using Fuzzy extraction.");
-    return fuzzyExtractSkills(description);
-  }
-
   private fuzzyAnswer(question: string, options?: string[], jobDescription?: string): string | null {
     return fuzzyAnswerQuestion(question, options, "text", jobDescription || "");
   }
@@ -563,4 +494,3 @@ Questions:
 
 // Global Instance
 export const llmManager = new LLMManager();
-

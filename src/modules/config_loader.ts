@@ -45,26 +45,29 @@ let secretsCache: Secrets | null = null;
 let questionsCache: Questions | null = null;
 let personalsCache: Personals | null = null;
 
-/**
- * Invalidate config caches - call this when storage is updated
- */
-export function invalidateConfigCache(which?: 'personals' | 'questions' | 'secrets' | 'all'): void {
-    if (!which || which === 'all') {
-        personalsCache = null;
-        questionsCache = null;
-        secretsCache = null;
-    } else if (which === 'personals') {
-        personalsCache = null;
-    } else if (which === 'questions') {
-        questionsCache = null;
-    } else if (which === 'secrets') {
-        secretsCache = null;
-    }
-}
-
-// Listen for storage changes and invalidate caches automatically
+// Listen for storage changes and invalidate caches automatically.
+// This module is bundled into content.bundle.js and re-evaluated on every
+// content-script re-injection (see content.ts) — each re-evaluation gets its
+// own fresh cache variables above, so the listener registered by a PREVIOUS
+// injection must be removed first — otherwise it accumulates forever for the
+// life of the tab, and this new injection's own caches would never get
+// invalidated because its listener never took over.
+//
+// This module is ALSO imported directly by background.ts, which runs in a
+// service worker — there is no `window` there, only `self` (in a page/content
+// script realm `self === window`, so `self` works in both places; `window`
+// alone would throw ReferenceError and take down the whole service worker).
 if (typeof chrome !== 'undefined' && chrome.storage) {
-    chrome.storage.onChanged.addListener((changes, areaName) => {
+    const globalScope = self as any;
+    if (typeof globalScope.__formAutopilotUnbindStorageListener === 'function') {
+        try {
+            chrome.storage.onChanged.removeListener(globalScope.__formAutopilotUnbindStorageListener);
+        } catch {
+            // ignore — previous listener may already be gone
+        }
+    }
+
+    const onStorageChanged = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
         if (areaName === 'local') {
             if (changes.personals) {
                 personalsCache = null;
@@ -76,7 +79,9 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
         if (areaName === 'sync' && changes.secrets) {
             secretsCache = null;
         }
-    });
+    };
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    globalScope.__formAutopilotUnbindStorageListener = onStorageChanged;
 }
 
 /**
@@ -227,17 +232,35 @@ export function hasConfiguredApiKeys(secrets: Secrets): boolean {
     return groq.length > 8 || hf.length > 8;
 }
 
+export interface ProviderAvailability {
+    useAI: boolean;
+    groqAvailable: boolean;
+    groqModel: string;
+    hfAvailable: boolean;
+    hfModel: string;
+}
+
 /**
- * Save secrets to Chrome storage
+ * Content-script-safe substitute for loadSecrets(): asks the background
+ * service worker whether each provider is configured WITHOUT ever returning
+ * the actual API key value into content-script memory. Background is the
+ * only context that ever holds real key material.
  */
-export async function saveSecrets(secrets: Partial<Secrets>): Promise<void> {
-    return new Promise((resolve) => {
-        chrome.storage.sync.get(['secrets'], (result) => {
-            const currentSecrets = result.secrets || secretsCache || {};
-            chrome.storage.sync.set({ secrets: { ...currentSecrets, ...secrets } }, () => {
-                secretsCache = null;
-                resolve();
-            });
+export async function loadProviderAvailability(): Promise<ProviderAvailability> {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.id) {
+        throw new Error('Extension context invalidated — refresh the page and try again');
+    }
+    return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({ action: 'getProviderAvailability' }, (response) => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+            if (!response || response.error) {
+                reject(new Error(response?.error || 'Failed to load provider availability'));
+                return;
+            }
+            resolve(response as ProviderAvailability);
         });
     });
 }
@@ -292,15 +315,4 @@ export function getPersonalsSync(): Personals | null {
 
 export function getQuestionsSync(): Questions | null {
     return questionsCache;
-}
-
-/**
- * Preload all configs (call this at extension init)
- */
-export async function preloadAllConfigs(): Promise<void> {
-    await Promise.all([
-        loadSecrets(),
-        loadQuestions(),
-        loadPersonals(),
-    ]);
 }

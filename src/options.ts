@@ -173,11 +173,17 @@ function saveSecrets(): void {
     updatedSecrets.huggingface_model = (document.getElementById('hfModel') as HTMLInputElement).value.trim();
     updatedSecrets.huggingface_api_url = (document.getElementById('hfApiUrl') as HTMLInputElement).value.trim();
 
+    // Empty field means the user cleared the key — remove it so a stale/invalid
+    // key cannot silently persist in storage.
     if (groqKey) {
       updatedSecrets.groq_api_key = groqKey;
+    } else {
+      delete updatedSecrets.groq_api_key;
     }
     if (hfKey) {
       updatedSecrets.huggingface_api_key = hfKey;
+    } else {
+      delete updatedSecrets.huggingface_api_key;
     }
 
     const settings = {
@@ -186,7 +192,11 @@ function saveSecrets(): void {
     };
 
     chrome.storage.sync.set({ secrets: updatedSecrets, settings }, () => {
-      showStatus('secretsStatus', '✓ API settings saved!');
+      if (chrome.runtime.lastError) {
+        showStatus('secretsStatus', `Error: ${chrome.runtime.lastError.message}`, true);
+      } else {
+        showStatus('secretsStatus', '✓ API settings saved!');
+      }
     });
   });
 }
@@ -207,7 +217,7 @@ function saveProfile(): void {
     if (chrome.runtime.lastError) {
       showStatus('profileStatus', `Error: ${chrome.runtime.lastError.message}`, true);
     } else {
-      showStatus('profileStatus', '✓ Profile saved! Reload extension to apply.');
+      showStatus('profileStatus', '✓ Profile saved! Applies on your next Fill (no reload needed).');
     }
   });
 }
@@ -228,7 +238,7 @@ function savePrompts(): void {
     if (chrome.runtime.lastError) {
       showStatus('promptsStatus', `Error: ${chrome.runtime.lastError.message}`, true);
     } else {
-      showStatus('promptsStatus', '✓ Prompts saved! Reload extension to apply.');
+      showStatus('promptsStatus', '✓ Prompts saved! Applies on your next Fill (no reload needed).');
     }
   });
 }

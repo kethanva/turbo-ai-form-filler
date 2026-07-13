@@ -58,9 +58,43 @@ export function convertToJson(text: string): any {
   return null;
 }
 
-export async function proxyFetch(url: string, options: any = {}): Promise<Response> {
+/**
+ * Fill a `{}`-placeholder template positionally, left to right.
+ * Unlike chained String#replace('{}', ...), each call only ever fills the
+ * next literal `{}` in the ORIGINAL template — an injected value that itself
+ * contains "{}" (e.g. an empty-object field in a JSON-stringified profile)
+ * can never be mistaken for the next slot.
+ */
+export function fillTemplate(template: string, ...values: string[]): string {
+  let i = 0;
+  return template.replace(/\{\}/g, () => (i < values.length ? values[i++] : '{}'));
+}
+
+/**
+ * Whole-word, order-independent containment match: "yes" matches inside
+ * "Yes, I am authorized to work", but "male" does NOT match inside "female"
+ * (plain bidirectional String#includes gets this backwards and has caused
+ * wrong-option selections on real forms — see H1).
+ */
+export function textualMatch(value: unknown, candidate: unknown): boolean {
+  const v = String(value ?? '').toLowerCase().trim();
+  const c = String(candidate ?? '').toLowerCase().trim();
+  if (!v || !c) return false;
+  if (v === c) return true;
+  if (v.length < 3 || c.length < 3) return false;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${esc(v)}\\b`, 'i').test(c) || new RegExp(`\\b${esc(c)}\\b`, 'i').test(v);
+}
+
+/**
+ * Ask the background service worker to call an LLM provider. Background owns
+ * the API key and endpoint URL — content scripts only ever pass a provider
+ * name and a request body, so no key material is ever loaded into a
+ * content-script (page-adjacent) JS heap.
+ */
+export async function callLLM(provider: 'groq' | 'huggingface', body: Record<string, unknown>): Promise<Response> {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ action: 'proxyFetch', url, options }, (response) => {
+    chrome.runtime.sendMessage({ action: 'llmRequest', provider, body }, (response) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -74,8 +108,10 @@ export async function proxyFetch(url: string, options: any = {}): Promise<Respon
         return;
       }
 
-      // Reconstruct Response object
-      resolve(new Response(response.body, {
+      // Reconstruct Response object. Null-body statuses (204/205/304) reject a
+      // body in the Response constructor, so pass null for those.
+      const isNullBodyStatus = [204, 205, 304].includes(response.status);
+      resolve(new Response(isNullBodyStatus ? null : response.body, {
         status: response.status,
         statusText: response.statusText,
         headers: response.headers

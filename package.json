@@ -2,7 +2,14 @@
   "name": "turbo-ai-form-filler",
   "version": "1.0.0",
   "description": "AI-powered Chrome extension that auto-fills job application forms on LinkedIn, Workday, Greenhouse, Lever, and more",
-  "keywords": ["chrome-extension", "form-filler", "AI", "job-application", "LLM", "automation"],
+  "keywords": [
+    "chrome-extension",
+    "form-filler",
+    "AI",
+    "job-application",
+    "LLM",
+    "automation"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,15 +20,19 @@
   },
   "homepage": "https://github.com/kethanva/turbo-ai-form-filler#readme",
   "scripts": {
-    "build":   "tsc && npm run bundle",
-    "bundle":  "npx esbuild dist/content.js --bundle --outfile=dist/content.bundle.js --format=iife --platform=browser && npx esbuild dist/popup.js --bundle --outfile=dist/popup.bundle.js --format=iife --platform=browser && npx esbuild dist/options.js --bundle --outfile=dist/options.bundle.js --format=iife --platform=browser",
-    "watch":   "tsc --watch",
-    "clean":   "rm -rf dist",
-    "package": "node scripts/package.js"
+    "build": "tsc && npm run bundle",
+    "bundle": "npx esbuild dist/content.js --bundle --outfile=dist/content.bundle.js --format=iife --platform=browser && npx esbuild dist/popup.js --bundle --outfile=dist/popup.bundle.js --format=iife --platform=browser && npx esbuild dist/options.js --bundle --outfile=dist/options.bundle.js --format=iife --platform=browser",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "package": "node scripts/package.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.251",
     "esbuild": "^0.27.2",
-    "typescript": "^5.3.3"
+    "jsdom": "^29.1.1",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.10"
   }
 }

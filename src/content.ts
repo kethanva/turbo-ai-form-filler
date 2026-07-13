@@ -1,7 +1,7 @@
 // Content script for form filling
 import { llmManager } from './modules/ai/llm_manager.js';
-import { loadSecrets, loadPersonals, getPersonalsSync, hasConfiguredApiKeys, Personals } from './modules/config_loader.js';
-import { printLog } from './modules/helpers.js';
+import { loadPersonals, getPersonalsSync, loadProviderAvailability, Personals } from './modules/config_loader.js';
+import { printLog, textualMatch } from './modules/helpers.js';
 
 // Cached personals (loaded async at start)
 let personals: Personals;
@@ -16,10 +16,15 @@ interface FormElement {
 
 // === HELPER FUNCTIONS ===
 
+/** Exact-or-subdomain match — `.includes('workday.com')` would also match `notworkday.com.evil.io`. */
+function hostMatches(hostname: string, domain: string): boolean {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
 // Cache hostname checks once per page load (hostname never changes mid-session)
 const _hostname = window.location.hostname.toLowerCase();
-const _isWorkday = _hostname.includes('workday.com') || _hostname.includes('myworkday.com') || _hostname.includes('myworkdayjobs.com');
-const _isLinkedIn = _hostname.includes('linkedin.com');
+const _isWorkday = hostMatches(_hostname, 'workday.com') || hostMatches(_hostname, 'myworkday.com') || hostMatches(_hostname, 'myworkdayjobs.com');
+const _isLinkedIn = hostMatches(_hostname, 'linkedin.com');
 
 /**
  * Detect if current page is Workday (needs delays for bot detection evasion)
@@ -77,8 +82,10 @@ class FormFiller {
 
       printLog(`Starting form filling... (${formElements.length} elements)`);
 
-      // Load configs and initialize LLM now that we know there is work to do
-      const secrets = await loadSecrets();
+      // Load configs and initialize LLM now that we know there is work to do.
+      // Provider availability (booleans + model names only, never the key
+      // itself) comes from the background service worker — the API key is
+      // never loaded into this content script's memory.
       personals = await loadPersonals();
       const expSummary = (personals.experience_details || [])
         .map((e, i) => `${i + 1}:${e.companyKey}|${e.title}|${e.from}->${e.to}`)
@@ -90,13 +97,13 @@ class FormFiller {
       printLog(`📋 Personals config loaded — education: [${eduSummary}]`);
       printLog(`📋 Source: chrome.storage.local.personals (seeded from bundled personals.json if empty)`);
 
+      await llmManager.initializeClients();
+      const availability = await loadProviderAvailability();
       // No keys is degraded, not fatal — the fuzzy matcher can still fill
       // fields straight from the saved profile without any LLM.
-      if (!hasConfiguredApiKeys(secrets)) {
-        printLog('⚠️ No API keys configured — using offline fuzzy matching only. For full AI filling, add a Groq (gsk_…) or HuggingFace (hf_…) key in extension Options, or in config/secrets.json, then reload the extension.');
+      if (availability.useAI && !availability.groqAvailable && !availability.hfAvailable) {
+        printLog('⚠️ No API keys configured — using offline fuzzy matching only. For full AI filling, add a Groq (gsk_…) or HuggingFace (hf_…) key in extension Options, then reload the extension.');
       }
-
-      await llmManager.initializeClients(secrets);
 
       // Check if batch mode is enabled (default: true)
       const settings = await this.getSettings();
@@ -308,10 +315,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
    * On other sites, it returns the document to ensure full page scanning.
    */
   private findActiveFormContainer(): HTMLElement | Document | null {
-    const hostname = window.location.hostname.toLowerCase();
-
     // On LinkedIn, scope strictly to the Easy Apply modal to avoid search facets.
-    if (hostname.includes('linkedin.com')) {
+    if (_isLinkedIn) {
       const easyApplyModalId = document.querySelector('[data-test-modal-id="easy-apply-modal"]');
       if (easyApplyModalId) {
         printLog('✅ Scoped to Easy Apply modal');
@@ -485,7 +490,6 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       const question = this.extractQuestion(input);
       const options = this.extractOptions(input);
 
-      // Check for combobox role or listbox popup
       // Check for combobox role or listbox popup
       let type = (input as any).type || 'text';
       if (input.tagName.toLowerCase() === 'ui5-date-picker-xweb-calendar-widget') {
@@ -1190,12 +1194,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     }
 
     // --- GENERIC REPEATER DETECTION (e.g. Breezy HR, Workable, etc.) ---
-    // Looks for elements inside repeating list items or divs
-    if (!rowText) { // Still check !rowText because Freshteam logic above might not have set rowText, it appends to question directly.
-      // Wait, Freshteam logic appends to question but doesn't set rowText.
-      // If Freshteam logic triggered, we probably don't want to double-tag.
-      // But question += ... above.
-
+    // Looks for elements inside repeating list items or divs.
+    // Note: Freshteam logic above appends directly to `question` without
+    // setting rowText, so this still runs after it — the `[Position/Education
+    // Entry:` guard further down prevents double-tagging in that case.
+    if (!rowText) {
       // 1. Find the closest "repeater item" candidate
       // We look for LI elements, role="listitem", or DIVs with specific classes that suggest repetition
       const repeaterItem = element.closest('li, [role="listitem"], .experience, .education, .employment, .position, .job, .school, .repeater-item, [ng-repeat]');
@@ -1414,7 +1417,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     const looksLikeEndDate =
       elemId.includes('--endDate') ||
       q.includes('formfield-enddate') ||
-      (/\bto\b/.test(q) && (q.includes('date') || q.includes('month') || q.includes('year') || q.includes('workday')));
+      (/\bto\b/.test(q) && (q.includes('date') || q.includes('month') || q.includes('year')));
 
     if (!looksLikeEndDate) return false;
 
@@ -1496,6 +1499,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       q.includes('school or university') ||
       q.includes('field of study')
     );
+  }
+
+  /** Race/veteran/disability/gender/orientation/religion/citizenship-class fields — see H3. */
+  private isSensitiveField(question: string): boolean {
+    return /\b(race|ethnicit\w*|veteran|disab\w*|gender|sex(ual)?|religio\w*|orientation|citizenship)\b/i.test(question || '');
   }
 
   private isExperienceSection(question: string): boolean {
@@ -1708,6 +1716,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     try {
       const { element, type, question, options } = formElement;
 
+      // React/Workday re-renders can detach a node between detection and
+      // fill. Writing to a detached element is a silent no-op — without this
+      // check filledCount still increments, so the popup reports success
+      // while the page shows the field empty (see H6).
+      if (!element.isConnected) {
+        printLog(`⚠ Skipping detached element: ${question || 'Unknown field'}`);
+        return;
+      }
+
       const enhancedQuestionEarly = this.getEnhancedQuestion(formElement);
       if (this.shouldSkipWorkdayEndDate(element, enhancedQuestionEarly)) {
         return;
@@ -1741,6 +1758,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       // Fill the element based on type
       await this.setElementValue(element, type, answer, options);
       this.filledCount++;
+      this.emitStatus();
 
       printLog(`✓ Filled: ${question} with: ${answer} `);
     } catch (error) {
@@ -1752,6 +1770,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   private async fillElementWithAnswer(formElement: FormElement, cachedAnswer?: string): Promise<void> {
     try {
       const { element, type, question, options } = formElement;
+
+      // See fillElement — a node detached since detection must not be
+      // silently counted as filled (H6).
+      if (!element.isConnected) {
+        printLog(`⚠ Skipping detached element: ${question || 'Unknown field'}`);
+        return;
+      }
 
       const enhancedQuestion = this.getEnhancedQuestion(formElement);
 
@@ -1785,6 +1810,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       // Fill the element based on type
       await this.setElementValue(element, type, answer, options);
       this.filledCount++;
+      this.emitStatus();
 
       printLog(`✓ Filled: ${question} with: ${answer.substring(0, 50)} `);
     } catch (error) {
@@ -1802,11 +1828,16 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       const placeholder = input.getAttribute('placeholder') || '';
       const questionLower = question?.toLowerCase() || '';
 
+      // Word-boundary "date" check — plain substring matched "Candidate",
+      // "Update", "Mandate" and wrongly tagged them as date fields (M6).
+      const hasDateWord = /\bdate\b/i.test(questionLower);
+      const placeholderHasDateWord = /\bdate\b/i.test(placeholder);
+
       // Workday-specific: Start/End dates often use MM/YYYY format
       const isWorkdayMonthYearField =
         (questionLower.includes('start') || questionLower.includes('end') ||
           questionLower.includes('from') || questionLower.includes('to')) &&
-        (questionLower.includes('date') || questionLower.includes('month') ||
+        (hasDateWord || questionLower.includes('month') ||
           (placeholder.toUpperCase().includes('MM') && !placeholder.toUpperCase().includes('DD')));
 
       // Check if placeholder explicitly shows MM/YYYY format (no day component)
@@ -1821,7 +1852,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         placeholder.toUpperCase().includes('MM') ||
         placeholder.toUpperCase().includes('DD') ||
         placeholder.toUpperCase().includes('YYYY') ||
-        placeholder.toLowerCase().includes('date')
+        placeholderHasDateWord
       )) {
         enhancedQuestion = `${enhancedQuestion} (format: ${placeholder})`;
       }
@@ -2239,21 +2270,29 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         // Get the checkbox label to check for terms/conditions/agreement
         const checkboxLabel = this.extractQuestion(element).toLowerCase();
 
+        // Marketing/subscription opt-ins require explicit user consent — never
+        // auto-check them even though their labels often also contain
+        // "consent"/"confirm"/"agree" (e.g. "I consent to receive marketing
+        // communications"). This guard used to be a comment only, with no
+        // code behind it — the checkbox below actually got auto-checked.
+        const isMarketingOptIn =
+          /\b(newsletter|marketing|promotional|subscribe|sms|text\s+alerts?|job\s+alerts?)\b/i.test(checkboxLabel);
+
         // Auto-check if this is a terms/conditions/agreement checkbox.
-        // NOTE: We intentionally do NOT auto-check subscribe/newsletter/marketing
-        // boxes — those require explicit user consent.
         const isTermsCheckbox =
-          checkboxLabel.includes('agree') ||
-          checkboxLabel.includes('accept') ||
-          checkboxLabel.includes('terms') ||
-          checkboxLabel.includes('conditions') ||
-          checkboxLabel.includes('privacy') ||
-          checkboxLabel.includes('policy') ||
-          checkboxLabel.includes('read and') ||
-          checkboxLabel.includes('i have read') ||
-          checkboxLabel.includes('consent') ||
-          checkboxLabel.includes('confirm') ||
-          checkboxLabel.includes('acknowledge');
+          !isMarketingOptIn && (
+            checkboxLabel.includes('agree') ||
+            checkboxLabel.includes('accept') ||
+            checkboxLabel.includes('terms') ||
+            checkboxLabel.includes('conditions') ||
+            checkboxLabel.includes('privacy') ||
+            checkboxLabel.includes('policy') ||
+            checkboxLabel.includes('read and') ||
+            checkboxLabel.includes('i have read') ||
+            checkboxLabel.includes('consent') ||
+            checkboxLabel.includes('confirm') ||
+            checkboxLabel.includes('acknowledge')
+          );
 
         // Special handling for "I currently work here" checkbox
         const isCurrentlyWorkHereCheckbox =
@@ -2305,6 +2344,16 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             checkbox.dispatchEvent(new Event('input', { bubbles: true }));
             printLog(`✓ Checked checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''} `);
           }
+        } else if (isCurrentlyWorkHereCheckbox && (input as HTMLInputElement).checked) {
+          // Profile says this entry has ended — clear a pre-checked box so the
+          // real end date gets filled instead of being skipped by
+          // shouldSkipWorkdayEndDate's "currently work here" DOM fallback.
+          const checkbox = input as HTMLInputElement;
+          checkbox.checked = false;
+          checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+          checkbox.dispatchEvent(new Event('click', { bubbles: true }));
+          checkbox.dispatchEvent(new Event('input', { bubbles: true }));
+          printLog(`✓ Unchecked "currently work here" (profile entry has an end date)`);
         }
         break;
 
@@ -2356,8 +2405,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           printLog(`Checking spl-radio: option="${optionText}", value="${optionValue}" vs target="${value}"`);
 
           const isMatch =
-            (optionText && value.toLowerCase().includes(optionText.toLowerCase())) ||
-            (optionText && optionText.toLowerCase().includes(value.toLowerCase())) ||
+            (!!optionText && textualMatch(value, optionText)) ||
             (optionValue && value === optionValue) ||
             (value.toLowerCase() === 'yes' && (optionText.toLowerCase() === 'yes' || optionValue === '1' || optionValue === 'true')) ||
             (value.toLowerCase() === 'no' && (optionText.toLowerCase() === 'no' || optionValue === '0' || optionValue === 'false'));
@@ -2404,29 +2452,26 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               return;
             }
 
-            // Check for partial match (only if strings are long enough)
-            if (valLowerRadio.length > 2 && labelLower.length > 2) {
-              if (labelLower.includes(valLowerRadio) || valLowerRadio.includes(labelLower)) {
-                radio.checked = true;
-                radio.dispatchEvent(new Event('change', { bubbles: true }));
-                radio.dispatchEvent(new Event('click', { bubbles: true }));
-                radio.dispatchEvent(new Event('input', { bubbles: true }));
-                printLog(`✓ Selected radio option ${idx} (partial): "${radioLabel}"`);
-                foundRadio = true;
-                return;
-              }
+            // Whole-word partial match (see H1: plain substring containment
+            // matches "male" inside "female" and picks the wrong option).
+            if (textualMatch(valLowerRadio, labelLower)) {
+              radio.checked = true;
+              radio.dispatchEvent(new Event('change', { bubbles: true }));
+              radio.dispatchEvent(new Event('click', { bubbles: true }));
+              radio.dispatchEvent(new Event('input', { bubbles: true }));
+              printLog(`✓ Selected radio option ${idx} (partial): "${radioLabel}"`);
+              foundRadio = true;
+              return;
             }
 
             // Check value partial match
-            if (valLowerRadio.length > 2 && radioValueLower.length > 2) {
-              if (radioValueLower.includes(valLowerRadio) || valLowerRadio.includes(radioValueLower)) {
-                radio.checked = true;
-                radio.dispatchEvent(new Event('change', { bubbles: true }));
-                radio.dispatchEvent(new Event('click', { bubbles: true }));
-                radio.dispatchEvent(new Event('input', { bubbles: true }));
-                printLog(`✓ Selected radio option ${idx} (value match): "${radioLabel}"`);
-                foundRadio = true;
-              }
+            if (textualMatch(valLowerRadio, radioValueLower)) {
+              radio.checked = true;
+              radio.dispatchEvent(new Event('change', { bubbles: true }));
+              radio.dispatchEvent(new Event('click', { bubbles: true }));
+              radio.dispatchEvent(new Event('input', { bubbles: true }));
+              printLog(`✓ Selected radio option ${idx} (value match): "${radioLabel}"`);
+              foundRadio = true;
             }
           });
 
@@ -2473,13 +2518,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             break;
           }
 
-          // Check for partial match on text
-          if (valLower.length >= 2 && optText.length >= 2) {
-            if (optText.includes(valLower) || valLower.includes(optText)) {
-              matchingOptionIndex = i;
-              printLog(`Found text match at index ${i}: "${opt.text}"(value: "${opt.value}")`);
-              break;
-            }
+          // Check for whole-word partial match on visible text. Plain
+          // bidirectional substring containment matches "male" inside
+          // "female" and silently selects the wrong option — see H1. Value/id/
+          // label checks below intentionally stay plain-substring (length>=2)
+          // to keep supporting short codes like "IN" for "India".
+          if (textualMatch(valLower, optText)) {
+            matchingOptionIndex = i;
+            printLog(`Found text match at index ${i}: "${opt.text}"(value: "${opt.value}")`);
+            break;
           }
 
           // Check for partial match on value (supports country codes like "IN" for "India")
@@ -2556,6 +2603,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               }
               printLog(`⚠ N/A returned but Yes/No detected. Auto-selected: ${defaultAnswer.toUpperCase()} (question: ${isPositiveQuestion ? 'positive' : isNegativeQuestion ? 'negative' : 'neutral'})`);
             }
+          } else if (this.isSensitiveField(questionText)) {
+            // Never blind-guess race/veteran/disability/gender/etc — selecting
+            // "the first option" here means fabricating a protected-status
+            // answer with zero signal behind it. Leave unselected instead.
+            printLog(`⚠ Sensitive field "${questionText}" — no confident match, leaving unselected`);
           } else {
             // For non-Yes/No questions, try to select first non-placeholder option
             let fallbackIndex = -1;
@@ -2603,10 +2655,10 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             // Exact match
             if (optText === val || optVal === val) return true;
 
-            // Partial match only for longer strings
-            if (val.length > 2 && optText.length > 2) {
-              if (optText.includes(val) || val.includes(optText)) return true;
-            }
+            // Whole-word text match (see H1 — plain substring containment
+            // matches "male" inside "female"). Value stays plain-substring
+            // for short-code support.
+            if (textualMatch(val, optText)) return true;
             if (val.length > 2 && optVal.length > 2) {
               if (optVal.includes(val) || val.includes(optVal)) return true;
             }
@@ -3029,10 +3081,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   }
 }
 
-// Safe under dynamic re-injection: always refresh globals from this bundle so
-// extension reloads/updates replace stale handlers. Bind the message listener once.
+// Safe under dynamic re-injection: refresh globals from this bundle so
+// extension reloads/updates replace stale handlers — UNLESS a fill is
+// currently running under the previous instance. Unconditionally replacing a
+// running instance hands it a fresh isRunning=false sibling, defeating its
+// own re-entrancy guard and letting two fill loops race the same live DOM
+// (double LLM calls, interleaved writes) — see H7.
 const __w = window as any;
-const formFiller = new FormFiller();
+const existingFiller = __w.__formAutopilotFormFiller as FormFiller | undefined;
+const formFiller = (existingFiller && existingFiller.getStatus().isRunning) ? existingFiller : new FormFiller();
 __w.__formAutopilotFormFiller = formFiller;
 __w.startFormFilling = () => {
   void (__w.__formAutopilotFormFiller as FormFiller).startFilling();
