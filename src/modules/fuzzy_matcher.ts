@@ -85,6 +85,30 @@ class FuzzyMatcher {
     const isPostgradQuestion = /postgraduate|post-graduate|masters|master's|pg|postgrad/i.test(question);
     const isUndergradQuestion = /undergraduate|under-graduate|bachelors|bachelor's|ug|undergrad|graduation/i.test(question);
 
+    // Signature / printed-name fields → full name from personals (never echo legal text)
+    const isSignatureField =
+      /\bsignature\s+and\s+date\b/.test(questionLower) ||
+      /^(electronic\s+)?signature(\s+and\s+date)?\s*\*?$/.test(
+        questionLower.replace(/\s*\[[^\]]+\]\s*/g, ' ').replace(/\*/g, '').trim()
+      ) ||
+      /\b(printed\s+name|full\s+legal\s+name)\b/.test(questionLower);
+    if (isSignatureField) {
+      const first = String(this.data['first_name'] || '').trim();
+      const middle = String(this.data['middle_name'] || '').trim();
+      const last = String(this.data['last_name'] || '').trim();
+      const fullName = [first, middle, last].filter(Boolean).join(' ');
+      if (fullName) {
+        if (/\bdate\b/.test(questionLower)) {
+          const today = new Date();
+          const mm = String(today.getMonth() + 1).padStart(2, '0');
+          const dd = String(today.getDate()).padStart(2, '0');
+          const yyyy = today.getFullYear();
+          return `${fullName} ${mm}/${dd}/${yyyy}`;
+        }
+        return fullName;
+      }
+    }
+
     // Direct keyword matching
     let bestMatchKey: string | null = null;
     let bestScore = 0;

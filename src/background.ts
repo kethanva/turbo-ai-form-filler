@@ -88,33 +88,15 @@ async function injectContentScripts(tabId: number): Promise<void> {
 async function startFillingInTab(tabId: number): Promise<{ success: boolean; filledCount: number; error?: string }> {
   try {
     await injectContentScripts(tabId);
-    const runFill = (allFrames: boolean) => chrome.scripting.executeScript({
-      target: { tabId, allFrames },
-      func: () => {
-        const w = window as unknown as {
-          startFormFillingAsync?: () => Promise<number>;
-        };
-        if (typeof w.startFormFillingAsync === 'function') {
-          return w.startFormFillingAsync();
+    return await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tabId, { action: 'startFilling' }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ success: false, filledCount: 0, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(response || { success: true, filledCount: 0 });
         }
-        return Promise.resolve(0);
-      },
+      });
     });
-
-    let results;
-    try {
-      results = await runFill(true);
-    } catch {
-      results = await runFill(false);
-    }
-
-    let filledCount = 0;
-    for (const frame of results || []) {
-      if (typeof frame.result === 'number') {
-        filledCount += frame.result;
-      }
-    }
-    return { success: true, filledCount };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, filledCount: 0, error: message };
@@ -123,53 +105,17 @@ async function startFillingInTab(tabId: number): Promise<{ success: boolean; fil
 
 async function getStatusFromTab(tabId: number): Promise<{ isRunning: boolean; filledCount: number } | null> {
   try {
-    // Aggregate across frames — iframe-only ATS forms never live in the top frame.
-    const results = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      func: () => {
-        const w = window as unknown as {
-          getFormFillerStatus?: () => { isRunning: boolean; filledCount: number };
-        };
-        if (typeof w.getFormFillerStatus === 'function') {
-          return w.getFormFillerStatus();
+    return await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tabId, { action: 'getStatus' }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve(null);
+        } else {
+          resolve(response || { isRunning: false, filledCount: 0 });
         }
-        return null;
-      },
-    });
-
-    let isRunning = false;
-    let filledCount = 0;
-    for (const frame of results || []) {
-      const status = frame.result as { isRunning?: boolean; filledCount?: number } | null;
-      if (status && typeof status === 'object') {
-        if (status.isRunning) isRunning = true;
-        if (typeof status.filledCount === 'number') filledCount += status.filledCount;
-      }
-    }
-    return { isRunning, filledCount };
-  } catch {
-    // allFrames can fail on restricted child frames — try top frame only
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: false },
-        func: () => {
-          const w = window as unknown as {
-            getFormFillerStatus?: () => { isRunning: boolean; filledCount: number };
-          };
-          if (typeof w.getFormFillerStatus === 'function') {
-            return w.getFormFillerStatus();
-          }
-          return null;
-        },
       });
-      const status = results?.[0]?.result as { isRunning?: boolean; filledCount?: number } | null;
-      if (status && typeof status === 'object') {
-        return { isRunning: !!status.isRunning, filledCount: status.filledCount || 0 };
-      }
-      return { isRunning: false, filledCount: 0 };
-    } catch {
-      return null;
-    }
+    });
+  } catch {
+    return null;
   }
 }
 
