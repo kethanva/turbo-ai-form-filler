@@ -6,17 +6,30 @@ interface FuzzyMatcherData {
   [key: string]: any;
 }
 
+interface KeyEntry {
+  key: string;
+  cleanKey: string;
+  words: string[];
+}
+
 class FuzzyMatcher {
   private data: FuzzyMatcherData;
+  private keyIndex: KeyEntry[] = [];
+  private cachedPersonalsRef: unknown = null;
 
   constructor() {
     this.data = {};
   }
 
   private ensureDataLoaded(): void {
-    // Always rebuild from current personals cache so profile edits apply immediately.
+    // Rebuild only when personals object identity changes (edits invalidate cache).
     const personals = getPersonalsSync();
+    if (personals === this.cachedPersonalsRef && this.keyIndex.length > 0) {
+      return;
+    }
+    this.cachedPersonalsRef = personals;
     this.data = {};
+    this.keyIndex = [];
     if (!personals) return;
 
     for (const key in personals) {
@@ -29,14 +42,23 @@ class FuzzyMatcher {
           Array.isArray(value)
         ) {
           this.data[key] = value;
+          const cleanKey = key.replace(/_/g, ' ').toLowerCase();
+          this.keyIndex.push({
+            key,
+            cleanKey,
+            words: cleanKey.split(/\s+/).filter((w) => w.length > 2),
+          });
         }
       }
     }
   }
 
   private similarityRatio(str1: string, str2: string): number {
-    const longer = str1.length > str2.length ? str1 : str2;
-    const shorter = str1.length > str2.length ? str2 : str1;
+    // Cap length — Levenshtein is O(n*m); long legal labels must not explode CPU
+    const a = str1.length > 64 ? str1.slice(0, 64) : str1;
+    const b = str2.length > 64 ? str2.slice(0, 64) : str2;
+    const longer = a.length > b.length ? a : b;
+    const shorter = a.length > b.length ? b : a;
 
     if (longer.length === 0) return 1.0;
 
@@ -45,48 +67,39 @@ class FuzzyMatcher {
   }
 
   private levenshteinDistance(str1: string, str2: string): number {
-    const matrix: number[][] = [];
+    const m = str2.length;
+    const n = str1.length;
+    let prev = new Array(n + 1);
+    let curr = new Array(n + 1);
+    for (let j = 0; j <= n; j++) prev[j] = j;
 
-    for (let i = 0; i <= str2.length; i++) {
-      matrix[i] = [i];
-    }
-
-    for (let j = 0; j <= str1.length; j++) {
-      matrix[0][j] = j;
-    }
-
-    for (let i = 1; i <= str2.length; i++) {
-      for (let j = 1; j <= str1.length; j++) {
+    for (let i = 1; i <= m; i++) {
+      curr[0] = i;
+      for (let j = 1; j <= n; j++) {
         if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
-          matrix[i][j] = matrix[i - 1][j - 1];
+          curr[j] = prev[j - 1];
         } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1,
-            matrix[i][j - 1] + 1,
-            matrix[i - 1][j] + 1
-          );
+          curr[j] = Math.min(prev[j - 1] + 1, curr[j - 1] + 1, prev[j] + 1);
         }
       }
+      [prev, curr] = [curr, prev];
     }
-
-    return matrix[str2.length][str1.length];
+    return prev[n];
   }
 
   answerQuestion(
     question: string,
     options?: string[],
-    questionType: string = "text",
-    jobDescription: string = ""
+    _questionType: string = "text",
+    _jobDescription: string = ""
   ): string | null {
     this.ensureDataLoaded();
     const questionLower = question.toLowerCase();
 
-    // Detect course-related questions
     const isCourseQuestion = questionLower.includes('course') && questionLower.includes('name');
     const isPostgradQuestion = /postgraduate|post-graduate|masters|master's|pg|postgrad/i.test(question);
     const isUndergradQuestion = /undergraduate|under-graduate|bachelors|bachelor's|ug|undergrad|graduation/i.test(question);
 
-    // Signature / printed-name fields → full name from personals (never echo legal text)
     const isSignatureField =
       /\bsignature\s+and\s+date\b/.test(questionLower) ||
       /^(electronic\s+)?signature(\s+and\s+date)?\s*\*?$/.test(
@@ -110,81 +123,67 @@ class FuzzyMatcher {
       }
     }
 
-    // Direct keyword matching
     let bestMatchKey: string | null = null;
     let bestScore = 0;
 
-    const stopWords = ["what", "is", "your", "do", "you", "have", "the", "a", "an", "are", "of", "in", "to", "for"];
-    const qWords = questionLower.split(' ').filter(w => !stopWords.includes(w));
+    const stopWords = new Set(["what", "is", "your", "do", "you", "have", "the", "a", "an", "are", "of", "in", "to", "for"]);
+    const qWords = questionLower.split(/[^a-z0-9]+/).filter(w => w.length > 2 && !stopWords.has(w));
     const cleanQuestion = qWords.join(' ');
+    const qWordSet = new Set(qWords);
 
-    for (const key in this.data) {
-      // Skip person name fields when question is about course names
-      if (isCourseQuestion && ['first_name', 'last_name', 'middle_name', 'name'].includes(key)) {
+    const shortlist: { entry: KeyEntry; score: number }[] = [];
+    for (const entry of this.keyIndex) {
+      if (isCourseQuestion && ['first_name', 'last_name', 'middle_name', 'name'].includes(entry.key)) {
         continue;
       }
 
-      const cleanKey = key.replace(/_/g, ' ');
-      const score1 = this.similarityRatio(questionLower, cleanKey.toLowerCase());
-      const score2 = this.similarityRatio(cleanQuestion, cleanKey.toLowerCase());
-      let score = Math.max(score1, score2);
+      const overlap = entry.words.filter((w) => qWordSet.has(w) || questionLower.includes(w)).length;
+      let score = entry.words.length > 0 ? (overlap / entry.words.length) * 0.8 : 0;
 
-      // Boost if exact meaningful key words are in question
-      const keyParts = cleanKey.split(' ');
-      const matches = keyParts.filter(part =>
-        questionLower.includes(part.toLowerCase()) && part.length > 3
-      ).length;
-      if (keyParts.length > 0) {
-        score += (matches / keyParts.length) * 0.4;
-      }
-
-      // Specific heuristic boosts
-      if (cleanKey.includes('experience') && questionLower.includes('experience')) {
-        score += 0.2;
-      }
-      if (cleanKey.includes('citizen') && questionLower.includes('citizen')) {
+      if (entry.cleanKey.includes('experience') && questionLower.includes('experience')) score += 0.2;
+      if (entry.cleanKey.includes('citizen') && questionLower.includes('citizen')) score += 0.3;
+      if (entry.cleanKey.includes('sponsorship') && (questionLower.includes('sponsorship') || questionLower.includes('visa'))) {
         score += 0.3;
       }
-      if (cleanKey.includes('sponsorship') && (questionLower.includes('sponsorship') || questionLower.includes('visa'))) {
-        score += 0.3;
-      }
-
-      // Boost for course-related questions
       if (isCourseQuestion) {
-        if (cleanKey.includes('course')) {
-          score += 0.5;
-        }
-        if (isPostgradQuestion && /postgraduate|masters|postgrad/i.test(cleanKey)) {
-          score += 0.6;
-        }
-        if (isUndergradQuestion && /undergraduate|bachelors|undergrad/i.test(cleanKey)) {
-          score += 0.6;
-        }
+        if (entry.cleanKey.includes('course')) score += 0.5;
+        if (isPostgradQuestion && /postgraduate|masters|postgrad/i.test(entry.cleanKey)) score += 0.6;
+        if (isUndergradQuestion && /undergraduate|bachelors|undergrad/i.test(entry.cleanKey)) score += 0.6;
       }
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatchKey = key;
+      if (overlap > 0 || score >= 0.3) {
+        shortlist.push({ entry, score });
       }
     }
 
-    // Threshold for acceptance
+    const candidates = shortlist.length > 0
+      ? shortlist.sort((a, b) => b.score - a.score).slice(0, 12)
+      : this.keyIndex.map((entry) => ({ entry, score: 0 }));
+
+    for (const { entry, score: base } of candidates) {
+      const score1 = this.similarityRatio(questionLower, entry.cleanKey);
+      const score2 = this.similarityRatio(cleanQuestion, entry.cleanKey);
+      const score = Math.max(score1, score2) + base;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatchKey = entry.key;
+      }
+    }
+
     if (bestScore > 0.65 && bestMatchKey) {
       const val = this.data[bestMatchKey];
 
-      // If options provided, try to map value to options
       if (options) {
         const mapped = this.mapValueToOptions(val, options);
         if (mapped) return mapped;
       }
 
-      // If no options, return the value as string
       if (!options) {
         return String(val);
       }
     }
 
-    // Fallback: Match Options directly against Data Values
     if (options) {
       for (const opt of options) {
         for (const key in this.data) {
@@ -200,10 +199,6 @@ class FuzzyMatcher {
   }
 
   private mapValueToOptions(value: any, options: string[]): string | null {
-    // Boolean profile fields (e.g. sponsorship_required: false) don't map to
-    // "true"/"false" text anywhere on a form — they map to Yes/No options.
-    // Without this, every boolean-backed Yes/No question fell through to the
-    // fuzzy-ratio check below and failed outright.
     if (typeof value === 'boolean') {
       const target = value ? 'yes' : 'no';
       const hit = options.find(opt => opt.toLowerCase().trim() === target);
@@ -212,23 +207,18 @@ class FuzzyMatcher {
 
     const valStr = String(value).toLowerCase();
 
-    // Exact match
     for (const opt of options) {
       if (opt.toLowerCase() === valStr) {
         return opt;
       }
     }
 
-    // Whole-word partial match. Plain bidirectional substring containment
-    // (valStr.includes(opt) || opt.includes(valStr)) matches "male" inside
-    // "female" and silently selects the wrong option — see H1.
     for (const opt of options) {
       if (textualMatch(valStr, opt)) {
         return opt;
       }
     }
 
-    // Fuzzy match
     let bestOpt: string | null = null;
     let bestRatio = 0;
     for (const opt of options) {
@@ -247,7 +237,6 @@ class FuzzyMatcher {
   }
 }
 
-// Global instance
 export const fuzzyMatcher = new FuzzyMatcher();
 
 export function fuzzyAnswerQuestion(
@@ -258,4 +247,3 @@ export function fuzzyAnswerQuestion(
 ): string | null {
   return fuzzyMatcher.answerQuestion(question, options, questionType, jobDescription);
 }
-

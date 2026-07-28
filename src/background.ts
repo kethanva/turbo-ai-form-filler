@@ -79,38 +79,121 @@ async function seedDefaultConfigs(): Promise<void> {
   // after we scrubbed the local secrets file.
 }
 
+function sendToFrame<T>(
+  tabId: number,
+  frameId: number,
+  message: Record<string, unknown>
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, message, { frameId }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve(null);
+        return;
+      }
+      resolve((response as T) ?? null);
+    });
+  });
+}
+
+/** True when a content-script listener is already present in the frame. */
+async function frameHasListener(tabId: number, frameId: number): Promise<boolean> {
+  const res = await sendToFrame<{ pong?: boolean }>(tabId, frameId, { action: 'ping' });
+  return !!res?.pong;
+}
+
+/**
+ * Inject the content bundle only into frames that do not already have a
+ * listener — avoids re-parsing the large IIFE across every iframe on each Start.
+ */
 async function injectContentScripts(tabId: number): Promise<void> {
+  let frames: chrome.webNavigation.GetAllFrameResultDetails[] | null = null;
+  try {
+    frames = await chrome.webNavigation.getAllFrames({ tabId });
+  } catch {
+    frames = null;
+  }
+
+  const frameIds = (frames && frames.length > 0)
+    ? frames.map((f) => f.frameId)
+    : [0];
+
+  const missing: number[] = [];
+  for (const frameId of frameIds) {
+    if (!(await frameHasListener(tabId, frameId))) {
+      missing.push(frameId);
+    }
+  }
+
+  if (missing.length === 0) return;
+
+  // Batch inject where possible; fall back per-frame for sandboxed/about:blank.
   try {
     await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
+      target: { tabId, frameIds: missing },
       files: [CONTENT_SCRIPT_FILE],
     });
   } catch {
-    // Some iframes (about:blank, sandboxed) reject allFrames injection — fall back to top frame.
-    await chrome.scripting.executeScript({
-      target: { tabId, allFrames: false },
-      files: [CONTENT_SCRIPT_FILE],
-    });
+    for (const frameId of missing) {
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [frameId] },
+          files: [CONTENT_SCRIPT_FILE],
+        });
+      } catch {
+        // Sandboxed / opaque origin frames reject injection — ignore.
+      }
+    }
   }
 }
 
 /**
- * Inject (idempotent) into all frames, then broadcast startFilling.
- * Every frame with forms fills itself; the returned count comes from the
- * first frame that responds (Chrome keeps only the first sendResponse).
+ * Inject into frames that need it, then start filling in every frame that has
+ * forms. Aggregate filledCount across frames so a top-frame "0 fields" reply
+ * can never erase a successful iframe fill.
  */
 async function startFillingInTab(tabId: number): Promise<{ success: boolean; filledCount: number; error?: string }> {
   try {
     await injectContentScripts(tabId);
-    return await new Promise((resolve) => {
-      chrome.tabs.sendMessage(tabId, { action: 'startFilling' }, (response) => {
-        if (chrome.runtime.lastError) {
-          resolve({ success: false, filledCount: 0, error: chrome.runtime.lastError.message });
-        } else {
-          resolve(response || { success: true, filledCount: 0 });
-        }
-      });
-    });
+
+    let frames: chrome.webNavigation.GetAllFrameResultDetails[] | null = null;
+    try {
+      frames = await chrome.webNavigation.getAllFrames({ tabId });
+    } catch {
+      frames = null;
+    }
+    const frameIds = (frames && frames.length > 0)
+      ? frames.map((f) => f.frameId)
+      : [0];
+
+    const results = await Promise.all(
+      frameIds.map((frameId) =>
+        sendToFrame<{ success?: boolean; filledCount?: number; skipped?: boolean; error?: string }>(
+          tabId,
+          frameId,
+          { action: 'startFilling' }
+        )
+      )
+    );
+
+    let filledCount = 0;
+    let anySuccess = false;
+    let lastError: string | undefined;
+    for (const res of results) {
+      if (!res) continue;
+      if (res.skipped) continue;
+      if (typeof res.filledCount === 'number') filledCount += res.filledCount;
+      if (res.success) anySuccess = true;
+      if (res.error) lastError = res.error;
+    }
+
+    if (!anySuccess && lastError) {
+      return { success: false, filledCount, error: lastError };
+    }
+    // No frame responded (restricted page) — surface a clear error.
+    if (!results.some((r) => r != null)) {
+      return { success: false, filledCount: 0, error: 'No frame accepted startFilling — refresh the page' };
+    }
+    return { success: true, filledCount };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, filledCount: 0, error: message };
@@ -119,15 +202,32 @@ async function startFillingInTab(tabId: number): Promise<{ success: boolean; fil
 
 async function getStatusFromTab(tabId: number): Promise<{ isRunning: boolean; filledCount: number } | null> {
   try {
-    return await new Promise((resolve) => {
-      chrome.tabs.sendMessage(tabId, { action: 'getStatus' }, (response) => {
-        if (chrome.runtime.lastError) {
-          resolve(null);
-        } else {
-          resolve(response || { isRunning: false, filledCount: 0 });
-        }
-      });
-    });
+    let frames: chrome.webNavigation.GetAllFrameResultDetails[] | null = null;
+    try {
+      frames = await chrome.webNavigation.getAllFrames({ tabId });
+    } catch {
+      frames = null;
+    }
+    const frameIds = (frames && frames.length > 0)
+      ? frames.map((f) => f.frameId)
+      : [0];
+
+    const results = await Promise.all(
+      frameIds.map((frameId) =>
+        sendToFrame<{ isRunning?: boolean; filledCount?: number }>(tabId, frameId, { action: 'getStatus' })
+      )
+    );
+
+    let isRunning = false;
+    let filledCount = 0;
+    let any = false;
+    for (const res of results) {
+      if (!res) continue;
+      any = true;
+      if (res.isRunning) isRunning = true;
+      if (typeof res.filledCount === 'number') filledCount += res.filledCount;
+    }
+    return any ? { isRunning, filledCount } : null;
   } catch {
     return null;
   }

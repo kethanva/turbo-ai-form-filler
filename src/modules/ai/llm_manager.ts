@@ -1,5 +1,5 @@
 // Converted from modules/ai/llm_manager.py
-import { loadPersonals, getPersonalsSync, loadProviderAvailability } from '../config_loader.js';
+import { loadPersonals, getPersonalsSync, loadProviderAvailability, ProviderAvailability } from '../config_loader.js';
 import { groqAnswerQuestion, GroqClient } from './groqConnections.js';
 import { huggingfaceAnswerQuestion, HuggingFaceClient } from './huggingfaceConnections.js';
 import { fuzzyAnswerQuestion } from '../fuzzy_matcher.js';
@@ -56,7 +56,7 @@ export class LLMManager {
    * content-script caller had to hold the key in memory just to pass it
    * through here.
    */
-  async initializeClients(): Promise<void> {
+  async initializeClients(): Promise<ProviderAvailability> {
     const avail = await loadProviderAvailability();
 
     this.clients.groq = (avail.useAI && avail.groqAvailable) ? { model: avail.groqModel } : null;
@@ -67,6 +67,12 @@ export class LLMManager {
     } else if (!avail.groqAvailable && !avail.hfAvailable) {
       printLog('No LLM API keys configured — answers will come from offline fuzzy matching.');
     }
+    return avail;
+  }
+
+  /** Public fuzzy fallback for batch-mode misses (no LLM). */
+  getFuzzyAnswerPublic(question: string, options?: string[]): string | null {
+    return this.fuzzyAnswer(question, options);
   }
 
   async getAnswer(
@@ -267,106 +273,37 @@ ${finalUserInfo}
       return results;
     }
 
-    // Build a combined prompt for all questions
+    // Lean prompt: entry arrays once; general context without duplicating those arrays
     const personalsData = getPersonalsSync() || await loadPersonals();
-    const userInfo = userInformationAll || configContext || JSON.stringify(personalsData);
-
-    // Explicitly add structured data for repeaters
     const experienceData = JSON.stringify(personalsData.experience_details || [], null, 2);
     const educationData = JSON.stringify(personalsData.education_details || [], null, 2);
+    const restPersonals: Record<string, unknown> = { ...(personalsData as Record<string, unknown>) };
+    delete restPersonals.experience_details;
+    delete restPersonals.education_details;
+    delete restPersonals.user_information_all;
+    const generalContext =
+      userInformationAll ||
+      configContext ||
+      JSON.stringify(restPersonals);
 
-    // Dynamic "Present" date — always use the last day of the current year so
-    // jobs marked "Present" get a correct end date regardless of when the prompt runs.
-    const presentDateStr = `12/31/${new Date().getFullYear()}`;
+    let batchPrompt = `You are filling a job application form. Use the data below. Do not invent facts.
 
-    let batchPrompt = `You are a helpful assistant filling out a form.
-
-=== PRIMARY DATA SOURCE (USE THIS FOR [Entry: X] QUESTIONS) ===
-
-WORK EXPERIENCE ARRAY (experience_details):
+EXPERIENCE_DETAILS (0-based; [Position Entry: N] => index N-1):
 ${experienceData}
 
-EDUCATION ARRAY (education_details):
+EDUCATION_DETAILS (0-based; [Education Entry: N] => index N-1):
 ${educationData}
 
-=== CRITICAL INSTRUCTIONS ===
+RULES:
+- [Entry: N] / [Position Entry: N] / [Education Entry: N] => array index (N-1). Missing => N/A.
+- Role Description/Responsibilities: join ALL highlights for that experience entry (not title/company).
+- Dates: MM/YYYY from .from/.to. Present/Current/Ongoing end date => N/A (checkbox handles it).
+- Years-only: return 4-digit year. Salary/CTC: numeric only. Visa/work auth: from profile.
+- Demographics: use explicit profile fields only; if missing => "Decline To Self Identify". Never infer race from nationality.
+- Signature/Printed Name: full name (+ today MM/DD/YYYY if date asked). Never paste legal text.
 
-**ARRAY INDEXING (READ THIS CAREFULLY)**:
-JavaScript arrays start at index 0. Formula: array[Entry_Number - 1]
-- [Position Entry: N] or Work/Professional Experience → experience_details[N-1]
-- [Education Entry: N] or Education/School → education_details[N-1]
-- Bare [Entry: N] → use experience_details for job fields, education_details for school/degree fields
-
-1. **FOR ANY QUESTION WITH [Entry: X]**: Extract ONLY from the arrays above.
-   - Look up array index (Entry_Number - 1) and return that entry's real field values.
-   - Job Title → .title | Company/Employer → .companyKey | Location → .location
-   - School → .institution | Degree → .degree | Field → .field
-   - DO NOT use any data from the "General Context" section below
-   - DO NOT invent companies, titles, or dates
-   - DO NOT copy example dates from these instructions — only use values from the JSON arrays
-
-2. **ROLE DESCRIPTION / JOB DESCRIPTION / RESPONSIBILITIES**:
-   - For "Role Description [Entry: N]", "Job Description", "Responsibilities", or similar:
-   - Take experience_details[N-1].highlights and join ALL items as bullet points (one per line)
-   - NEVER return only the first highlight
-   - NEVER return the job title or company name as the description
-
-3. **DATE FIELDS**: For "Start Date" / "From" or "End Date" / "To" questions:
-   - Extract from the matching entry's .from or .to field in the JSON array
-   - Normalize to MM/YYYY (e.g. "02-2022" or "2022-02" → "02/2022")
-   - If .to is "Present"/"Current"/"Ongoing": return "N/A" for End Date (the "currently work here" checkbox handles it). Do NOT invent ${presentDateStr} or any calendar end date.
-   - [Position Entry: N] dates come from experience_details; [Education Entry: N] from education_details
-   - NEVER reuse another entry's dates
-   - NEVER swap From and To
-
-4. **YEAR FIELDS**: For "Start Year" or "End Year" questions:
-   - Extract from the .from or .to field in the JSON array
-   - Return only the year portion (e.g., "2021-10" → "2021")
-
-5. **LOCATION FIELDS**:
-   - **IF AND ONLY IF** the question asks for "Location", "City", "Place", or "Address" (specifically for Work/Education):
-   - **THEN** return the location from user profile (e.g. "San Francisco, USA").
-   - **CRITICAL EXCEPTION**: If the question asks for "Salary", "CTC", "Compensation", or "Pay", SKIP this rule and see Rule 6.
-
-6. **SALARY / CTC / COMPENSATION FIELDS**:
-   - Look for keywords: "CTC", "Salary", "Compensation", "Remuneration", "Pay".
-   - Answer with the **numeric value only** from the user data (e.g. 80000).
-   - Do NOT add currency symbols unless asked.
-   - Do NOT answer with a city/location.
-
-   **EXAMPLES**:
-   - "Current CTC?" → "80000"
-   - "Expected Salary?" → "85000"
-   - "What is your current Location?" → "San Francisco, USA"
-
-7. **NOTICE PERIOD**:
-    - "Notice Period" -> Extract from "Notice Period" or "soon_join_us" (e.g. "60 days")
-
-8. **EMPLOYER/UNIVERSITY FIELDS**: Use companyKey or institution from the JSON
-
-9. **VISA / SPONSORSHIP FIELDS**:
-   - If question asks about requiring Visa Sponsorship now or in future -> Answer based on user info (e.g., "No" if sponsorship_required is false)
-   - If question asks about Work Authorization -> Answer "Yes" if authorized
-
-10. **DEMOGRAPHIC FIELDS (RACE, GENDER, VETERAN, DISABILITY)**:
-   - Extract explicitly from user info (e.g. "gender", "veteran_status").
-   - If the exact race is not in the JSON but nationality is (e.g. "citizen_of_india": true), you can infer race (e.g., "Asian").
-   - If disability status is false, select the option indicating no disability.
-   - If information is completely missing and cannot be inferred, answer "Decline To Self Identify" or "I do not wish to answer" instead of "N/A".
-
-11. **IF [Entry: X] is missing**: Return "N/A"
-
-12. **SIGNATURE / PRINTED NAME**:
-   - For "Signature", "Signature and Date", "Printed Name", or "Full Legal Name": return the applicant's full name from user info.
-   - If the field also asks for a date, append today's date as MM/DD/YYYY.
-   - NEVER echo the legal/certification paragraph or question text as the answer.
-
-**CRITICAL INDEXING REMINDER:**
-- Array indices are 0-based. [Entry: N] maps to array index (N - 1).
-- DO NOT return the entry number literally — look up the actual value in the array.
-
-=== General Context (use only for non-[Entry: X] questions) ===
-${userInfo}
+GENERAL PROFILE (non-entry questions):
+${generalContext}
 `;
 
     batchPrompt += `
@@ -483,7 +420,7 @@ Questions:
       }
     }
 
-    printLog(`⚠️ All batch providers failed. Will fall back to individual LLM calls.`);
+    printLog(`⚠️ All batch providers failed. Caller will use fuzzy for misses (no per-field LLM in batch mode).`);
     return results;
   }
 

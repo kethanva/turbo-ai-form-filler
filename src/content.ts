@@ -1,6 +1,6 @@
 // Content script for form filling
 import { llmManager } from './modules/ai/llm_manager.js';
-import { loadPersonals, getPersonalsSync, loadProviderAvailability, Personals } from './modules/config_loader.js';
+import { loadPersonals, getPersonalsSync, Personals } from './modules/config_loader.js';
 import { printLog, textualMatch } from './modules/helpers.js';
 
 // Cached personals (loaded async at start)
@@ -48,9 +48,43 @@ function getConditionalDelay(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+/** Wait until selector matches under root (or timeout). Prefer over fixed sleeps. */
+function waitForSelector(
+  root: ParentNode,
+  selector: string,
+  timeoutMs: number = 800
+): Promise<Element[]> {
+  const existing = Array.from(root.querySelectorAll(selector));
+  if (existing.length > 0) return Promise.resolve(existing);
+
+  return new Promise((resolve) => {
+    const observer = new MutationObserver(() => {
+      const found = Array.from(root.querySelectorAll(selector));
+      if (found.length > 0) {
+        observer.disconnect();
+        resolve(found);
+      }
+    });
+    const target = root === document ? document.documentElement : (root as Node);
+    observer.observe(target, { childList: true, subtree: true });
+    setTimeout(() => {
+      observer.disconnect();
+      resolve(Array.from(root.querySelectorAll(selector)));
+    }, timeoutMs);
+  });
+}
+
+function needsUiSettle(type: string): boolean {
+  return type === 'listbox' || type === 'combobox' || type === 'select-one' ||
+    type === 'select-multiple' || type === 'select' || type === 'radio' ||
+    type === 'spl-radio-group' || type === 'ui5-date';
+}
+
 class FormFiller {
   private isRunning: boolean = false;
   private filledCount: number = 0;
+  /** Cached once per fill run — simulateTabCommit must not rescan the whole DOM per field. */
+  private focusableCache: HTMLElement[] | null = null;
 
   async startFilling(): Promise<number> {
     if (this.isRunning) {
@@ -60,19 +94,18 @@ class FormFiller {
 
     this.isRunning = true;
     this.filledCount = 0;
+    this.focusableCache = null;
     this.emitStatus();
 
     try {
-      // Wait briefly for form to fully render (handles dynamic/lazy-loaded fields)
-      await sleep(500);
+      // Short yield for lazy-rendered fields (avoid long fixed 500+1000 sleeps)
+      await sleep(100);
 
       // Detect elements first — bail silently for iframes and pages with no forms.
-      // This avoids initializing LLM clients on pages that have nothing to fill.
       let formElements = this.findFormElements();
 
-      // Retry once if no elements found (form may still be rendering)
       if (formElements.length === 0) {
-        await sleep(1000);
+        await sleep(300);
         formElements = this.findFormElements();
       }
 
@@ -82,106 +115,103 @@ class FormFiller {
 
       printLog(`Starting form filling... (${formElements.length} elements)`);
 
-      // Load configs and initialize LLM now that we know there is work to do.
-      // Provider availability (booleans + model names only, never the key
-      // itself) comes from the background service worker — the API key is
-      // never loaded into this content script's memory.
       personals = await loadPersonals();
-      const expSummary = (personals.experience_details || [])
-        .map((e, i) => `${i + 1}:${e.companyKey}|${e.title}|${e.from}->${e.to}`)
-        .join('; ');
-      const eduSummary = (personals.education_details || [])
-        .map((e, i) => `${i + 1}:${e.institution}|${e.degree}`)
-        .join('; ');
-      printLog(`📋 Personals config loaded — experience: [${expSummary}]`);
-      printLog(`📋 Personals config loaded — education: [${eduSummary}]`);
-      printLog(`📋 Source: chrome.storage.local.personals (seeded from bundled personals.json if empty)`);
+      printLog(
+        `Personals loaded — ${(personals.experience_details || []).length} experience, ` +
+        `${(personals.education_details || []).length} education entries`
+      );
 
-      await llmManager.initializeClients();
-      const availability = await loadProviderAvailability();
-      // No keys is degraded, not fatal — the fuzzy matcher can still fill
-      // fields straight from the saved profile without any LLM.
+      // Single RPC: initializeClients returns availability
+      const availability = await llmManager.initializeClients();
       if (availability.useAI && !availability.groqAvailable && !availability.hfAvailable) {
-        printLog('⚠️ No API keys configured — using offline fuzzy matching only. For full AI filling, add a Groq (gsk_…) or HuggingFace (hf_…) key in extension Options, then reload the extension.');
+        printLog('No API keys configured — using offline fuzzy matching only.');
       }
 
-      // Check if batch mode is enabled (default: true)
       const settings = await this.getSettings();
       const batchModeEnabled = settings.batch_mode !== false;
-      const chunkModeEnabled = settings.chunk_mode !== false; // Default true if not set
+      const chunkModeEnabled = settings.chunk_mode !== false;
 
       if (batchModeEnabled) {
-        // BATCH MODE: Process in chunks (if enabled) to avoid overloading LLM or Browser
-        printLog(chunkModeEnabled ? "Using BATCH mode (faster, chunked)" : "Using BATCH mode (fastest, all-at-once)");
-        const userInfo = personals.user_information_all || JSON.stringify(personals);
+        printLog(chunkModeEnabled ? "Using BATCH mode (chunked)" : "Using BATCH mode (all-at-once)");
+        // Lean context: batch prompt already embeds entry arrays — don't double-send full personals
+        const userInfo = personals.user_information_all || undefined;
 
-        // Process questions in chunks of 25 (if chunking is on) or all at once
-        const CHUNK_SIZE = chunkModeEnabled ? 25 : formElements.length;
+        const CHUNK_SIZE = chunkModeEnabled ? 10 : formElements.length;
         for (let i = 0; i < formElements.length; i += CHUNK_SIZE) {
           const chunk = formElements.slice(i, i + CHUNK_SIZE);
           printLog(`Processing batch chunk ${Math.floor(i / CHUNK_SIZE) + 1} (${chunk.length} elements)...`);
 
-          // 1. Prepare questions for this chunk
           const questionsList = chunk.map(el => ({
             question: this.getEnhancedQuestion(el),
             options: el.options,
             questionType: this.determineQuestionType(el.type, el.options)
           }));
 
-          // 2. Get answers for this chunk from LLM
           printLog(`Sending batch request for ${questionsList.length} questions...`);
-          const batchAnswers = await llmManager.getBatchAnswers(
+          let batchAnswers = await llmManager.getBatchAnswers(
             questionsList,
             undefined,
-            userInfo,
-            JSON.stringify(personals)
+            userInfo
           );
+
+          // One retry for unmatched indices only — never per-field LLM storms in batch mode
+          const missingIdx = questionsList
+            .map((_, idx) => idx)
+            .filter((idx) => !batchAnswers.get(idx)?.trim());
+          if (missingIdx.length > 0 && missingIdx.length < questionsList.length) {
+            printLog(`Batch retry for ${missingIdx.length} unmatched questions...`);
+            const retryList = missingIdx.map((idx) => questionsList[idx]);
+            const retryAnswers = await llmManager.getBatchAnswers(
+              retryList,
+              undefined,
+              userInfo
+            );
+            retryAnswers.forEach((answer, localIdx) => {
+              batchAnswers.set(missingIdx[localIdx], answer);
+            });
+          }
           printLog(`Got ${batchAnswers.size} answers for chunk`);
 
-          // 3. Fill elements in this chunk (SEQUENTIAL to prevent UI interference)
-          // We must fill sequentially because opening a dropdown often closes others
-          // Answers are keyed by chunk-local index to avoid duplicate-label collisions
           for (let j = 0; j < chunk.length; j++) {
             const formElement = chunk[j];
             try {
               const cachedAnswer = batchAnswers.get(j);
               if (!cachedAnswer) {
-                printLog(`⚠️ No cached answer for: ${questionsList[j].question.substring(0, 60)}...`);
+                printLog(`No cached answer for: ${questionsList[j].question.substring(0, 60)}...`);
               }
-              await this.fillElementWithAnswer(formElement, cachedAnswer);
+              // allowPerFieldLlm=false: structured + cached + fuzzy only
+              await this.fillElementWithAnswer(formElement, cachedAnswer, false);
 
-              // Small delay between elements to allow UI to settle
-              await this.delay(100);
+              if (needsUiSettle(formElement.type)) {
+                await this.delay(50);
+              }
             } catch (error) {
               printLog(`Error filling element: ${error}`);
             }
           }
 
-          // Small delay between chunks to let browser render/process events
           if (i + CHUNK_SIZE < formElements.length) {
-            await this.delay(500);
+            await this.delay(100);
           }
         }
 
-        // LinkedIn-specific: Handle validation errors after initial fill
         if (_isLinkedIn) {
           await this.handleLinkedInValidationErrors();
         }
       } else {
-        // SEQUENTIAL MODE: One LLM call per field (more accurate)
         const delayMessage = _isWorkday ? " with delays for Workday detection evasion" : "";
         printLog(`Using SEQUENTIAL mode (more accurate)${delayMessage}`);
 
         for (const formElement of formElements) {
           await this.fillElement(formElement);
-          // Conditional delay: 500-1500ms on Workday, 0ms elsewhere
           const delay = getConditionalDelay(500, 1500);
           if (delay > 0) {
             await sleep(delay);
+          } else if (needsUiSettle(formElement.type)) {
+            await this.delay(50);
           }
         }
 
-        // LinkedIn-specific: Handle validation errors after initial fill
         if (_isLinkedIn) {
           await this.handleLinkedInValidationErrors();
         }
@@ -194,6 +224,7 @@ class FormFiller {
       return this.filledCount;
     } finally {
       this.isRunning = false;
+      this.focusableCache = null;
       this.emitStatus();
     }
   }
@@ -365,13 +396,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       const found = container.querySelectorAll(formElementSelector);
       shadowInputs.push(...Array.from(found));
 
-      // Find all shadow hosts in current level and recurse
-      const allElements = container.querySelectorAll('*');
-      allElements.forEach(el => {
+      // Only recurse custom elements (likely shadow hosts) — avoid querySelectorAll('*') on every node
+      const customElements = container.querySelectorAll('*');
+      for (let i = 0; i < customElements.length; i++) {
+        const el = customElements[i];
+        if (!el.tagName.includes('-')) continue;
         if (el.shadowRoot) {
           collectFromShadowDOM(el.shadowRoot);
         }
-      });
+      }
     };
 
     // Note: older logic querySelectorAll on document. If root is an element, we query on it.
@@ -404,7 +437,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           inputType === 'submit' ||
           inputType === 'button' ||
           inputType === 'reset' ||
-          inputType === 'image') {
+          inputType === 'image' ||
+          inputType === 'password' ||
+          inputType === 'file') {
           return;
         }
       }
@@ -660,7 +695,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     // Skip hidden, submit, button elements (standard inputs only)
     if (!tagName.startsWith('spl-')) {
       if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button' ||
-        el.type === 'reset' || el.type === 'image') {
+        el.type === 'reset' || el.type === 'image' || el.type === 'password' ||
+        el.type === 'file') {
         return true;
       }
     }
@@ -710,14 +746,18 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
    * which causes the LLM to echo the hash back as an answer.
    */
   private getCleanLabelText(element: Element): string {
-    const clone = element.cloneNode(true) as Element;
-    clone.querySelectorAll('.ada-unique-content').forEach(el => el.remove());
-    // Workday often nests instructional/legal rich-text inside the same wrapper as the field label.
-    // Strip those so we don't treat the preamble as the question.
-    clone.querySelectorAll(
-      '[data-automation-id="richText"], [data-automation-id="formFieldHelpText"], .WDGO, .gwt-HTML'
-    ).forEach(el => el.remove());
-    return clone.textContent?.trim() || '';
+    // Walk text nodes without cloneNode — exclude known ATS noise selectors.
+    const skipSel = '.ada-unique-content, [data-automation-id="richText"], [data-automation-id="formFieldHelpText"], .WDGO, .gwt-HTML';
+    const parts: string[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const parent = (node as Text).parentElement;
+      if (parent && parent.closest(skipSel)) continue;
+      const t = node.textContent?.trim();
+      if (t) parts.push(t);
+    }
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
   }
 
   /**
@@ -1739,14 +1779,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       let answer = this.getSignatureAnswer(enhancedQuestion) || this.getStructuredEntryAnswer(enhancedQuestion);
 
       if (!answer) {
-        const userInfo = personals.user_information_all || JSON.stringify(personals);
+        const userInfo = personals.user_information_all || undefined;
         answer = await llmManager.getAnswer(
           enhancedQuestion,
           options,
           this.determineQuestionType(type, options),
           undefined,
-          userInfo,
-          JSON.stringify(personals)
+          userInfo
         );
       }
 
@@ -1766,13 +1805,16 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     }
   }
 
-  // Optimized version that uses pre-cached answer
-  private async fillElementWithAnswer(formElement: FormElement, cachedAnswer?: string): Promise<void> {
+  // Optimized version that uses pre-cached answer.
+  // allowPerFieldLlm=false in batch mode: structured + cached + fuzzy only (no LLM storm).
+  private async fillElementWithAnswer(
+    formElement: FormElement,
+    cachedAnswer?: string,
+    allowPerFieldLlm: boolean = true
+  ): Promise<void> {
     try {
       const { element, type, question, options } = formElement;
 
-      // See fillElement — a node detached since detection must not be
-      // silently counted as filled (H6).
       if (!element.isConnected) {
         printLog(`⚠ Skipping detached element: ${question || 'Unknown field'}`);
         return;
@@ -1780,26 +1822,24 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
       const enhancedQuestion = this.getEnhancedQuestion(formElement);
 
-      // Skip endDate when profile says Present (do not wait for checkbox DOM state)
       if (this.shouldSkipWorkdayEndDate(element, enhancedQuestion)) {
         return;
       }
 
-      // Prefer structured personals (signature / entry fields) over batch LLM answers
       let answer = this.getSignatureAnswer(enhancedQuestion) || this.getStructuredEntryAnswer(enhancedQuestion) || cachedAnswer;
 
-      // Fall back to individual LLM call if no cached answer
-      if (!answer) {
-        const userInfo = personals.user_information_all || JSON.stringify(personals);
+      if (!answer && allowPerFieldLlm) {
+        const userInfo = personals.user_information_all || undefined;
         const llmAnswer = await llmManager.getAnswer(
           enhancedQuestion,
           options,
           this.determineQuestionType(type, options),
           undefined,
-          userInfo,
-          JSON.stringify(personals)
+          userInfo
         );
         answer = llmAnswer || undefined;
+      } else if (!answer && !allowPerFieldLlm) {
+        answer = llmManager.getFuzzyAnswerPublic(enhancedQuestion, options) || undefined;
       }
 
       if (!answer) {
@@ -1807,7 +1847,6 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         return;
       }
 
-      // Fill the element based on type
       await this.setElementValue(element, type, answer, options);
       this.filledCount++;
       this.emitStatus();
@@ -1916,6 +1955,20 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  /** Cached once per fill run — avoid O(F) DOM scan on every Workday field. */
+  private getFocusableElements(): HTMLElement[] {
+    if (this.focusableCache) return this.focusableCache;
+    this.focusableCache = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    ).filter((node) => {
+      const style = window.getComputedStyle(node);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    });
+    return this.focusableCache;
+  }
+
   /**
    * Simulate Tab-away commit. Manually Tabbing a Workday field validates and clears
    * "required" errors even when the value was already visible.
@@ -1946,16 +1999,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     }
     el.dispatchEvent(new Event('blur', { bubbles: true }));
 
-    // Move focus to the next focusable control when possible (closer to a real Tab)
-    const focusable = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      )
-    ).filter((node) => {
-      const style = window.getComputedStyle(node);
-      return style.display !== 'none' && style.visibility !== 'hidden' && (node.offsetParent !== null || node === el);
-    });
-
+    const focusable = this.getFocusableElements();
     const idx = focusable.indexOf(el);
     const next = idx >= 0 ? focusable[idx + 1] : undefined;
     if (next && next !== el) {
@@ -1982,12 +2026,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
     switch (type) {
+      case 'password':
+      case 'file':
+        printLog('Skipping password/file input');
+        break;
       case 'text':
       case 'email':
       case 'url':
       case 'search':
       case 'tel':
-      case 'password':
         // SPECIAL HANDLING: Workday date spinbuttons (Month/Year)
         const spinRole = input.getAttribute('role');
         const ariaLabel = input.getAttribute('aria-label') || '';
@@ -2678,10 +2725,6 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         printLog(`Multi - select: selected ${selectedCount} options`);
         break;
 
-      case 'file':
-        // File inputs cannot be programmatically set for security reasons
-        printLog('File input cannot be filled programmatically');
-        break;
       case 'image':
         // Image inputs are typically submit buttons
         break;
@@ -2694,8 +2737,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         input.dispatchEvent(new Event('focus', { bubbles: true }));
         input.dispatchEvent(new Event('mousedown', { bubbles: true }));
 
-        // Wait for options to appear
-        await this.delay(500);
+        // Wait for options (adaptive) instead of a fixed 500ms sleep
+        const optionSel = '[role="option"], [class*="option"]:not([class*="container"]), li[role="presentation"], .active-result, .wd-list-item';
+        await waitForSelector(document, optionSel, 800);
 
         // 2. Find options - SCOPED SEARCH
         // First, try to find options container via aria-controls (Greenhouse/React-Select)
@@ -3061,8 +3105,10 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     const hasInShadow = (container: Element | ShadowRoot): boolean => {
       if (container.querySelector(formElementSelector)) return true;
       const all = container.querySelectorAll('*');
-      for (const el of Array.from(all)) {
-        if (el.shadowRoot && hasInShadow(el.shadowRoot)) return true;
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        if (!el.tagName.includes('-') || !el.shadowRoot) continue;
+        if (hasInShadow(el.shadowRoot)) return true;
       }
       return false;
     };
@@ -3103,8 +3149,15 @@ if (!__w.__formAutopilotListenerBound) {
     const filler = __w.__formAutopilotFormFiller as FormFiller | undefined;
     if (!filler) return false;
 
-    const isTopFrame = window.self === window.top;
-    if (!isTopFrame && !filler.hasFormElements()) {
+    // Background probes for an existing listener before re-injecting
+    if (message.action === 'ping') {
+      sendResponse({ pong: true });
+      return false;
+    }
+
+    // Any frame without forms stays silent so aggregated frame replies aren't polluted
+    if (message.action === 'startFilling' && !filler.hasFormElements()) {
+      sendResponse({ success: true, filledCount: 0, skipped: true });
       return false;
     }
 
