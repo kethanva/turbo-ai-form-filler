@@ -30,6 +30,11 @@
       addListener: () => { /* no-op */ },
       removeListener: () => { /* no-op */ },
     },
+    session: {
+      get: async () => ({}),
+      set: async () => undefined,
+      remove: async () => undefined,
+    },
   },
   commands: {
     onCommand: {

@@ -75,6 +75,9 @@ if (typeof chrome !== 'undefined' && chrome.storage) {
             if (changes.questions) {
                 questionsCache = null;
             }
+            if (changes.secrets) {
+                secretsCache = null;
+            }
         }
         if (areaName === 'sync' && changes.secrets) {
             secretsCache = null;
@@ -147,9 +150,28 @@ function normalizeQuestions(raw: {
 }
 
 /**
- * Load secrets — chrome.storage.sync overlays bundled config/secrets.json.
- * Reading secrets.json via getURL is safe for extension contexts when WAR is unset.
- * Web pages cannot fetch it; only this extension can.
+ * Overlay stored secrets onto bundled defaults. An explicit empty key must
+ * win — otherwise "Remove key" cannot disable a bundled config/secrets.json
+ * value in the live unpacked tree.
+ */
+export function overlaySecrets(stored: Partial<Secrets> | undefined, fallback: Secrets): Secrets {
+    if (!stored) return fallback;
+    const merged = { ...fallback };
+    if ('groq_api_key' in stored) merged.groq_api_key = String(stored.groq_api_key || '');
+    if ('huggingface_api_key' in stored) merged.huggingface_api_key = String(stored.huggingface_api_key || '');
+    if (stored.use_AI !== undefined) merged.use_AI = stored.use_AI;
+    if (stored.groq_model) merged.groq_model = stored.groq_model;
+    if (stored.groq_api_url) merged.groq_api_url = stored.groq_api_url;
+    if (stored.huggingface_model) merged.huggingface_model = stored.huggingface_model;
+    if (stored.huggingface_api_url) merged.huggingface_api_url = stored.huggingface_api_url;
+    return merged;
+}
+
+/**
+ * Load secrets — chrome.storage.local overlays bundled config/secrets.json.
+ * Sync is a migration fallback only (keys are copied to local then stripped).
+ * Reading secrets.json via getURL is safe for extension-origin contexts.
+ * Content scripts must use loadProviderAvailability() instead of this.
  */
 export async function loadSecrets(): Promise<Secrets> {
     if (secretsCache) {
@@ -181,32 +203,26 @@ export async function loadSecrets(): Promise<Secrets> {
 
     const result = await new Promise<Secrets>((resolve) => {
         try {
-            chrome.storage.sync.get(['secrets'], (storedResult) => {
+            chrome.storage.local.get(['secrets'], (localResult) => {
                 if (chrome.runtime.lastError) {
                     resolve(base);
                     return;
                 }
-                if (storedResult.secrets) {
-                    const stored = storedResult.secrets;
-                    const merged = { ...base };
-
-                    // Storage wins when a real key is present (Options page).
-                    if (stored.groq_api_key && stored.groq_api_key.trim().length > 8) {
-                        merged.groq_api_key = stored.groq_api_key;
-                    }
-                    if (stored.huggingface_api_key && stored.huggingface_api_key.trim().length > 8) {
-                        merged.huggingface_api_key = stored.huggingface_api_key;
-                    }
-                    if (stored.use_AI !== undefined) merged.use_AI = stored.use_AI;
-                    if (stored.groq_model) merged.groq_model = stored.groq_model;
-                    if (stored.groq_api_url) merged.groq_api_url = stored.groq_api_url;
-                    if (stored.huggingface_model) merged.huggingface_model = stored.huggingface_model;
-                    if (stored.huggingface_api_url) merged.huggingface_api_url = stored.huggingface_api_url;
-
-                    resolve(merged);
-                } else {
-                    resolve(base);
+                const localSecrets = localResult.secrets as Partial<Secrets> | undefined;
+                if (localSecrets) {
+                    resolve(overlaySecrets(localSecrets, base));
+                    return;
                 }
+
+                chrome.storage.sync.get(['secrets'], (storedResult) => {
+                    if (chrome.runtime.lastError || !storedResult.secrets) {
+                        resolve(base);
+                        return;
+                    }
+                    const merged = overlaySecrets(storedResult.secrets, base);
+                    void chrome.storage.local.set({ secrets: merged });
+                    resolve(merged);
+                });
             });
         } catch {
             resolve(base);

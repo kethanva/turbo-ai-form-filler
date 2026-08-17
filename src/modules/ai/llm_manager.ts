@@ -14,7 +14,7 @@ export class LLMManager {
   private clients: LLMClients;
   private providerPriority: string[];
   private fuzzyFallbackEnabled: boolean;
-  private cooldownEndTime: Date | null;
+  private providerCooldownUntil: Record<string, number>;
   private currentFallbackIndex: number;
 
   constructor() {
@@ -24,7 +24,7 @@ export class LLMManager {
     };
     this.providerPriority = ["groq", "huggingface"];
     this.fuzzyFallbackEnabled = true;
-    this.cooldownEndTime = null;
+    this.providerCooldownUntil = {};
     this.currentFallbackIndex = 0;
   }
 
@@ -83,22 +83,13 @@ export class LLMManager {
     userInformationAll?: string,
     configContext?: string
   ): Promise<string | null> {
-    // Check cooldown
-    if (this.cooldownEndTime) {
-      if (new Date() < this.cooldownEndTime) {
-        printLog(`LLM Cooldown active until ${this.cooldownEndTime}. Using Fuzzy Logic.`);
-        return this.fuzzyAnswer(question, options, jobDescription);
-      } else {
-        printLog("LLM Cooldown ended. Resetting cycle.");
-        this.cooldownEndTime = null;
-        this.currentFallbackIndex = 0;
-      }
+    const now = Date.now();
+    for (const [provider, until] of Object.entries(this.providerCooldownUntil)) {
+      if (until <= now) delete this.providerCooldownUntil[provider];
     }
 
-    // Fuzzy-only mode: no configured/enabled provider can ever answer — skip
-    // the provider loop entirely instead of erroring per field.
     if (!this.clients.groq && !this.clients.huggingface) {
-      return this.fuzzyAnswer(question, options, jobDescription);
+      return this.fuzzyAnswer(question, options, questionType, jobDescription);
     }
 
     const personalsData = getPersonalsSync() || await loadPersonals();
@@ -146,6 +137,11 @@ ${finalUserInfo}
       // so there is nothing to gain from re-initializing per field (that
       // used to re-log "client ready" / re-throw "no key" once per question).
       if (!client) continue;
+      const coolUntil = this.providerCooldownUntil[provider];
+      if (coolUntil && Date.now() < coolUntil) {
+        printLog(`Skipping ${provider} — cooldown active`);
+        continue;
+      }
 
       //printLog(`Attempting answer with ${provider}...`);
       try {
@@ -213,8 +209,10 @@ ${finalUserInfo}
           printLog(`LLM Provider ${provider} failed: Authentication error - check API key`);
         } else if (errorMsg.includes('429') || errorMsg.toLowerCase().includes('rate limit')) {
           printLog(`LLM Provider ${provider} failed: Rate limit exceeded`);
+          this.providerCooldownUntil[provider] = Date.now() + 2 * 60 * 1000;
         } else if (errorMsg.toLowerCase().includes('connection') || errorMsg.toLowerCase().includes('timeout')) {
           printLog(`LLM Provider ${provider} failed: Connection/timeout error`);
+          this.providerCooldownUntil[provider] = Date.now() + 30 * 1000;
         } else {
           printLog(`LLM Provider ${provider} failed: ${errorMsg.substring(0, 200)}`);
         }
@@ -223,17 +221,8 @@ ${finalUserInfo}
     }
 
     // If all providers failed
-    const anyClientConfigured = !!(this.clients.groq || this.clients.huggingface);
     printLog("All LLM providers failed. Trying Fuzzy Logic.");
-    const fuzzyAns = this.fuzzyAnswer(question, options, jobDescription);
-
-    // Only cooldown on real provider failures (rate limits / outages), not missing API keys.
-    if (anyClientConfigured) {
-      printLog("Activating 2 minute cooldown for LLMs.");
-      this.cooldownEndTime = new Date(Date.now() + 2 * 60 * 1000);
-    } else {
-      printLog("Skipping LLM cooldown — no API clients configured. Add keys in Options.");
-    }
+    const fuzzyAns = this.fuzzyAnswer(question, options, questionType, jobDescription);
     this.currentFallbackIndex = 0;
 
     if (fuzzyAns && typeof fuzzyAns === 'string' && fuzzyAns.trim().length > 0) {
@@ -256,18 +245,6 @@ ${finalUserInfo}
 
     if (questionsList.length === 0) return results;
 
-    // Honor cooldown — don't hammer APIs that just failed.
-    if (this.cooldownEndTime && new Date() < this.cooldownEndTime) {
-      printLog(`Batch skipped: LLM cooldown active until ${this.cooldownEndTime}`);
-      return results;
-    }
-    if (this.cooldownEndTime && new Date() >= this.cooldownEndTime) {
-      this.cooldownEndTime = null;
-      this.currentFallbackIndex = 0;
-    }
-
-    // No clients → no provider can answer the batch; per-field fuzzy fallback
-    // in the caller handles it. Skip building the (large) batch prompt.
     if (!this.clients.groq && !this.clients.huggingface) {
       printLog('Batch skipped: no LLM clients — falling back to per-field matching.');
       return results;
@@ -390,11 +367,16 @@ Questions:
       try {
         const client = this.clients[provider as keyof LLMClients];
         if (!client) continue;
+        const coolUntil = this.providerCooldownUntil[provider];
+        if (coolUntil && Date.now() < coolUntil) {
+          printLog(`Batch skipped ${provider} — cooldown active`);
+          continue;
+        }
 
         const response = await callLLM(provider as 'groq' | 'huggingface', {
           model: client.model,
           messages: [{ role: "user", content: batchPrompt }],
-          max_tokens: 4096,
+          max_tokens: 2048,
           temperature: 0.1
         });
 
@@ -405,14 +387,19 @@ Questions:
             if (typeof content === 'string' && content.length > 0) {
               parseResponse(content);
 
-              if (results.size > 0) {
+              const threshold = Math.ceil(questionsList.length * 0.5);
+              if (results.size >= threshold) {
                 printLog(`✅ Batch answered ${results.size}/${questionsList.length} questions via ${provider}`);
                 return results;
               }
+              printLog(`Batch ${provider} only parsed ${results.size}/${questionsList.length} — trying next provider`);
             }
           }
         } else {
           printLog(`Batch ${provider} failed with status ${response.status}`);
+          if (response.status === 429) {
+            this.providerCooldownUntil[provider] = Date.now() + 2 * 60 * 1000;
+          }
         }
       } catch (e) {
         printLog(`Batch ${provider} error: ${e}`);
@@ -424,8 +411,8 @@ Questions:
     return results;
   }
 
-  private fuzzyAnswer(question: string, options?: string[], jobDescription?: string): string | null {
-    return fuzzyAnswerQuestion(question, options, "text", jobDescription || "");
+  private fuzzyAnswer(question: string, options?: string[], questionType: string = 'text', jobDescription?: string): string | null {
+    return fuzzyAnswerQuestion(question, options, questionType, jobDescription || "");
   }
 }
 

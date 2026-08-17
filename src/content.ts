@@ -1,7 +1,19 @@
 // Content script for form filling
 import { llmManager } from './modules/ai/llm_manager.js';
 import { loadPersonals, getPersonalsSync, Personals } from './modules/config_loader.js';
-import { printLog, textualMatch } from './modules/helpers.js';
+import { printLog, textualMatch, setDebugLogging } from './modules/helpers.js';
+import {
+  MAX_BATCH_CHUNK,
+  MAX_FIELDS_PER_FILL,
+  checkboxAction,
+  extractEntryIndex as extractEntryIndexFromQuestion,
+  isCredentialOrSecretField,
+  isNoAnswer,
+  formatUi5Date,
+  isSensitiveField as isSensitiveFieldName,
+  normalizePhone,
+  parseNumericAnswer,
+} from './modules/fill_policy.js';
 
 // Cached personals (loaded async at start)
 let personals: Personals;
@@ -85,6 +97,7 @@ class FormFiller {
   private filledCount: number = 0;
   /** Cached once per fill run — simulateTabCommit must not rescan the whole DOM per field. */
   private focusableCache: HTMLElement[] | null = null;
+  private autoAcceptTerms: boolean = false;
 
   async startFilling(): Promise<number> {
     if (this.isRunning) {
@@ -113,6 +126,11 @@ class FormFiller {
         return 0;
       }
 
+      if (formElements.length > MAX_FIELDS_PER_FILL) {
+        printLog(`Capping fill at ${MAX_FIELDS_PER_FILL} fields (found ${formElements.length})`);
+        formElements = formElements.slice(0, MAX_FIELDS_PER_FILL);
+      }
+
       printLog(`Starting form filling... (${formElements.length} elements)`);
 
       personals = await loadPersonals();
@@ -129,14 +147,18 @@ class FormFiller {
 
       const settings = await this.getSettings();
       const batchModeEnabled = settings.batch_mode !== false;
-      const chunkModeEnabled = settings.chunk_mode !== false;
+      const chunkEnabled = settings.chunk_mode !== false;
+      this.autoAcceptTerms = settings.auto_accept_terms === true;
+      setDebugLogging(settings.debug_logging === true);
 
       if (batchModeEnabled) {
-        printLog(chunkModeEnabled ? "Using BATCH mode (chunked)" : "Using BATCH mode (all-at-once)");
+        printLog(chunkEnabled ? 'Using BATCH mode (chunked)' : 'Using BATCH mode (single request)');
         // Lean context: batch prompt already embeds entry arrays — don't double-send full personals
         const userInfo = personals.user_information_all || undefined;
 
-        const CHUNK_SIZE = chunkModeEnabled ? 10 : formElements.length;
+        const CHUNK_SIZE = chunkEnabled
+          ? Math.min(MAX_BATCH_CHUNK, formElements.length)
+          : formElements.length;
         for (let i = 0; i < formElements.length; i += CHUNK_SIZE) {
           const chunk = formElements.slice(i, i + CHUNK_SIZE);
           printLog(`Processing batch chunk ${Math.floor(i / CHUNK_SIZE) + 1} (${chunk.length} elements)...`);
@@ -166,9 +188,10 @@ class FormFiller {
               undefined,
               userInfo
             );
-            retryAnswers.forEach((answer, localIdx) => {
-              batchAnswers.set(missingIdx[localIdx], answer);
-            });
+            for (let r = 0; r < missingIdx.length; r++) {
+              const mapped = retryAnswers.get(r);
+              if (mapped) batchAnswers.set(missingIdx[r], mapped);
+            }
           }
           printLog(`Got ${batchAnswers.size} answers for chunk`);
 
@@ -198,6 +221,14 @@ class FormFiller {
         if (_isLinkedIn) {
           await this.handleLinkedInValidationErrors();
         }
+
+        const extras = this.findNewEmptyElements(formElements);
+        if (extras.length > 0) {
+          printLog(`Re-scan found ${extras.length} newly appeared fields`);
+          for (const formElement of extras) {
+            await this.fillElementWithAnswer(formElement, undefined, false);
+          }
+        }
       } else {
         const delayMessage = _isWorkday ? " with delays for Workday detection evasion" : "";
         printLog(`Using SEQUENTIAL mode (more accurate)${delayMessage}`);
@@ -214,6 +245,14 @@ class FormFiller {
 
         if (_isLinkedIn) {
           await this.handleLinkedInValidationErrors();
+        }
+
+        const extras = this.findNewEmptyElements(formElements);
+        if (extras.length > 0) {
+          printLog(`Re-scan found ${extras.length} newly appeared fields`);
+          for (const formElement of extras) {
+            await this.fillElement(formElement);
+          }
         }
       }
 
@@ -367,6 +406,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     return document;
   }
 
+  /** Fields that appeared after the first snapshot (SPA / multi-step). */
+  private findNewEmptyElements(already: FormElement[]): FormElement[] {
+    const seen = new Set(already.map((el) => el.element));
+    return this.findFormElements().filter((el) => !seen.has(el.element)).slice(0, 20);
+  }
+
   private findFormElements(): FormElement[] {
     const elements: FormElement[] = [];
 
@@ -407,16 +452,14 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
     };
 
-    // Note: older logic querySelectorAll on document. If root is an element, we query on it.
-    // However, root could be 'Document'. querySelectorAll works on both.
-    const shadowHosts = root.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
-
-    shadowHosts.forEach(host => {
-      if (host.shadowRoot) {
-        collectFromShadowDOM(host.shadowRoot);
-        printLog(`Recursively scanned Shadow DOM of ${host.tagName}`);
-      }
-    });
+    // Recurse into every custom-element shadow root under `root`, not just
+    // two named hosts — hasFormElements already walked all hyphenated tags.
+    const customHosts = root.querySelectorAll('*');
+    for (let i = 0; i < customHosts.length; i++) {
+      const host = customHosts[i];
+      if (!host.tagName.includes('-') || !host.shadowRoot) continue;
+      collectFromShadowDOM(host.shadowRoot);
+    }
 
     // Combine all found inputs
     const inputs = [...lightDomInputs, ...shadowInputs];
@@ -513,16 +556,31 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         printLog(`[SPL] Found ${tagName}: id=${input.id || 'none'}, label=${input.getAttribute('label') || 'none'}`);
       }
 
-      // FORCE FILL MODE: Don't skip based on existing values
-      // Only skip if already checked checkboxes/radios AND they match what we would set
-      // (We'll let the LLM decide what to set)
-
-      // Select elements are always included (force fill mode)
-
-      // For checkboxes/radios, include them (force fill will set based on LLM answer)
-      // For text inputs, include them even if they have values (force fill)
-
       const question = this.extractQuestion(input);
+      if (isCredentialOrSecretField(input, question)) {
+        printLog(`Skipping credential/secret field: ${question || input.id || input.tagName}`);
+        return;
+      }
+
+      // Preserve values the user (or the ATS) already filled — second hotkey
+      // must not clobber corrections. Empty / placeholder selects still fill.
+      const tag = input.tagName.toLowerCase();
+      const inputTypeForSkip = String((input as HTMLInputElement).type || '').toLowerCase();
+      const isChoice =
+        inputTypeForSkip === 'checkbox' ||
+        inputTypeForSkip === 'radio' ||
+        tag === 'select' ||
+        tag === 'spl-checkbox' ||
+        tag === 'spl-radio-group' ||
+        tag === 'spl-select';
+      if (!isChoice && !isListbox) {
+        const existing = String((input as HTMLInputElement).value || '').trim();
+        const placeholder = (input.getAttribute('placeholder') || '').trim();
+        if (existing && existing !== placeholder) {
+          return;
+        }
+      }
+
       const options = this.extractOptions(input);
 
       // Check for combobox role or listbox popup
@@ -1517,14 +1575,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   }
 
   private extractEntryIndex(question: string): number | null {
-    const entryMatch =
-      question.match(/\[(?:Position|Education)\s+Entry:\s*(\d+)\]/i) ||
-      question.match(/\[Entry:\s*(\d+)\]/i) ||
-      question.match(/(?:position|education)\s+entry[:\s]*(\d+)/i) ||
-      question.match(/entry[:\s]*(\d+)/i);
-    if (!entryMatch) return null;
-    const idx = parseInt(entryMatch[1], 10) - 1;
-    return Number.isFinite(idx) && idx >= 0 ? idx : null;
+    return extractEntryIndexFromQuestion(question);
   }
 
   private isEducationSection(question: string): boolean {
@@ -1543,7 +1594,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
   /** Race/veteran/disability/gender/orientation/religion/citizenship-class fields — see H3. */
   private isSensitiveField(question: string): boolean {
-    return /\b(race|ethnicit\w*|veteran|disab\w*|gender|sex(ual)?|religio\w*|orientation|citizenship)\b/i.test(question || '');
+    return isSensitiveFieldName(question);
   }
 
   private isExperienceSection(question: string): boolean {
@@ -1795,11 +1846,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
 
       // Fill the element based on type
-      await this.setElementValue(element, type, answer, options);
-      this.filledCount++;
-      this.emitStatus();
-
-      printLog(`✓ Filled: ${question} with: ${answer} `);
+      const applied = await this.setElementValue(element, type, answer, options, true);
+      if (applied) {
+        this.filledCount++;
+        this.emitStatus();
+        printLog(`✓ Filled: ${question}`);
+      }
     } catch (error) {
       printLog(`Error filling element: ${error} `);
     }
@@ -1847,11 +1899,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         return;
       }
 
-      await this.setElementValue(element, type, answer, options);
-      this.filledCount++;
-      this.emitStatus();
-
-      printLog(`✓ Filled: ${question} with: ${answer.substring(0, 50)} `);
+      const applied = await this.setElementValue(element, type, answer, options, allowPerFieldLlm);
+      if (applied) {
+        this.filledCount++;
+        this.emitStatus();
+        printLog(`✓ Filled: ${question}`);
+      }
     } catch (error) {
       printLog(`Error filling element: ${error} `);
     }
@@ -1958,13 +2011,21 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
   /** Cached once per fill run — avoid O(F) DOM scan on every Workday field. */
   private getFocusableElements(): HTMLElement[] {
     if (this.focusableCache) return this.focusableCache;
+    const root: ParentNode = this.findActiveFormContainer() || document;
     this.focusableCache = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        'input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      root.querySelectorAll<HTMLElement>(
+        'input:not([disabled]):not([type="hidden"]):not([type="submit"]), textarea:not([disabled]), select:not([disabled]), button:not([disabled]):not([type="submit"]), [tabindex]:not([tabindex="-1"])'
       )
     ).filter((node) => {
       const style = window.getComputedStyle(node);
-      return style.display !== 'none' && style.visibility !== 'hidden';
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      const type = (node as HTMLInputElement).type;
+      if (type === 'submit' || type === 'image') return false;
+      const label = (node.textContent || node.getAttribute('aria-label') || '').toLowerCase();
+      if (node.tagName.toLowerCase() === 'button' && /\b(submit|apply|send application)\b/.test(label)) {
+        return false;
+      }
+      return true;
     });
     return this.focusableCache;
   }
@@ -2021,9 +2082,12 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     element: HTMLElement,
     type: string,
     value: string,
-    options?: string[]
-  ): Promise<void> {
+    options?: string[],
+    allowPerFieldLlm: boolean = true
+  ): Promise<boolean> {
     const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+    let applied = false;
+    const markApplied = () => { applied = true; };
 
     switch (type) {
       case 'password':
@@ -2107,6 +2171,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
                   await setSpinValue(yearInput, year, false);
                   this.simulateTabCommit(yearInput);
                   printLog(`✓ Set Workday date spinbuttons (Sync): Month=${month}, Year=${year}`);
+                  markApplied();
                   break; // Done
                 }
 
@@ -2115,12 +2180,14 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
                   await setSpinValue(monthInput, month, true);
                   this.simulateTabCommit(monthInput);
                   printLog(`✓ Set Workday Month spinbutton: ${month}`);
+                  markApplied();
                   break;
                 }
                 if (ariaLabel === 'Year' && year !== null) {
                   await setSpinValue(yearInput, year, false);
                   this.simulateTabCommit(yearInput);
                   printLog(`✓ Set Workday Year spinbutton: ${year}`);
+                  markApplied();
                   break;
                 }
               }
@@ -2131,11 +2198,13 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               await setSpinValue(input as HTMLInputElement, month, true);
               this.simulateTabCommit(input as HTMLInputElement);
               printLog(`✓ Set Month spinbutton (fallback): ${month}`);
+              markApplied();
               break;
             } else if (ariaLabel === 'Year' && year !== null) {
               await setSpinValue(input as HTMLInputElement, year, false);
               this.simulateTabCommit(input as HTMLInputElement);
               printLog(`✓ Set Year spinbutton (fallback): ${year}`);
+              markApplied();
               break;
             }
           }
@@ -2151,8 +2220,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         // Check for maxlength
         const maxLen = input.getAttribute('maxlength');
         let textValue = value;
+        if (type === 'tel') {
+          textValue = normalizePhone(textValue);
+        }
         if (maxLen && parseInt(maxLen) > 0) {
-          textValue = value.substring(0, parseInt(maxLen));
+          textValue = textValue.substring(0, parseInt(maxLen));
         }
         if (isWorkdayDomain()) {
           this.commitWorkdayFieldValue(input as HTMLInputElement | HTMLTextAreaElement, textValue);
@@ -2161,31 +2233,20 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
         }
+        markApplied();
         break;
 
       case 'number':
         // Get question/placeholder to check if it's a donation/amount field
         const numQuestion = this.extractQuestion(element).toLowerCase();
-        const numPlaceholder = (input.getAttribute('placeholder') || '').toLowerCase();
 
-        // Parse and validate number, respect min/max
-        let numVal = parseFloat(value.replace(/[^0-9.\-]/g, ''));
+        // Parse and validate number, respect min/max. Never invent a default.
+        const parsedNum = parseNumericAnswer(value, numQuestion);
+        let numVal = parsedNum === null ? NaN : parsedNum;
 
-        // If parsing failed but this is a donation/amount field, use a default value
         if (isNaN(numVal)) {
-          if (numQuestion.includes('donation') || numQuestion.includes('amount') ||
-            numQuestion.includes('price') || numQuestion.includes('cost') ||
-            numPlaceholder.includes('donation') || numPlaceholder.includes('amount')) {
-            numVal = 10; // Default donation amount
-            printLog(`Using default donation amount: ${numVal} `);
-          } else if (numQuestion.includes('quantity') || numQuestion.includes('qty') ||
-            numQuestion.includes('count') || numQuestion.includes('number of')) {
-            numVal = 1; // Default quantity
-            printLog(`Using default quantity: ${numVal} `);
-          } else if (numQuestion.includes('age') || numQuestion.includes('years')) {
-            numVal = 25; // Default age
-            printLog(`Using default age: ${numVal} `);
-          }
+          printLog(`Skipping number field — no parseable value`);
+          break;
         }
 
         if (!isNaN(numVal)) {
@@ -2193,8 +2254,14 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           const max = input.getAttribute('max');
           const step = input.getAttribute('step');
 
-          if (min && numVal < parseFloat(min)) numVal = parseFloat(min);
-          if (max && numVal > parseFloat(max)) numVal = parseFloat(max);
+          if (min && numVal < parseFloat(min)) {
+            printLog(`Skipping number field — ${numVal} is below min ${min}`);
+            break;
+          }
+          if (max && numVal > parseFloat(max)) {
+            printLog(`Skipping number field — ${numVal} is above max ${max}`);
+            break;
+          }
 
           // Round to step if specified
           if (step && step !== 'any') {
@@ -2210,6 +2277,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             input.dispatchEvent(new Event('change', { bubbles: true }));
           }
           printLog(`✓ Set number input to: ${numVal} `);
+          markApplied();
         } else {
           printLog(`⚠ Could not parse number from: ${value} `);
         }
@@ -2261,6 +2329,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             input.dispatchEvent(new Event('change', { bubbles: true }));
           }
           printLog(`✓ Set date to: ${(input as HTMLInputElement).value} (format: ${expectedFormat})`);
+          markApplied();
         } else {
           printLog(`⚠ Could not parse date: ${value} `);
         }
@@ -2276,15 +2345,19 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           input.value = `${hours}:${mins}:${secs}`;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
+          markApplied();
         }
         break;
 
       case 'datetime-local':
       case 'month':
       case 'week':
-        input.value = value;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
+        if (!isNoAnswer(value)) {
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          if ((input as HTMLInputElement).value) markApplied();
+        }
         break;
 
       case 'range':
@@ -2292,11 +2365,14 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         if (!isNaN(rangeValue)) {
           const rangeMin = parseFloat(input.getAttribute('min') || '0');
           const rangeMax = parseFloat(input.getAttribute('max') || '100');
-          if (rangeValue < rangeMin) rangeValue = rangeMin;
-          if (rangeValue > rangeMax) rangeValue = rangeMax;
+          if (rangeValue < rangeMin || rangeValue > rangeMax) {
+            printLog(`Skipping range field — ${rangeValue} outside [${rangeMin}, ${rangeMax}]`);
+            break;
+          }
           input.value = String(rangeValue);
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
+          markApplied();
         }
         break;
 
@@ -2308,101 +2384,68 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           input.value = colorVal;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
+          markApplied();
         } else {
           printLog(`⚠ Invalid color format: ${value} `);
         }
         break;
 
-      case 'checkbox':
-        // Get the checkbox label to check for terms/conditions/agreement
+      case 'checkbox': {
         const checkboxLabel = this.extractQuestion(element).toLowerCase();
-
-        // Marketing/subscription opt-ins require explicit user consent — never
-        // auto-check them even though their labels often also contain
-        // "consent"/"confirm"/"agree" (e.g. "I consent to receive marketing
-        // communications"). This guard used to be a comment only, with no
-        // code behind it — the checkbox below actually got auto-checked.
-        const isMarketingOptIn =
-          /\b(newsletter|marketing|promotional|subscribe|sms|text\s+alerts?|job\s+alerts?)\b/i.test(checkboxLabel);
-
-        // Auto-check if this is a terms/conditions/agreement checkbox.
-        const isTermsCheckbox =
-          !isMarketingOptIn && (
-            checkboxLabel.includes('agree') ||
-            checkboxLabel.includes('accept') ||
-            checkboxLabel.includes('terms') ||
-            checkboxLabel.includes('conditions') ||
-            checkboxLabel.includes('privacy') ||
-            checkboxLabel.includes('policy') ||
-            checkboxLabel.includes('read and') ||
-            checkboxLabel.includes('i have read') ||
-            checkboxLabel.includes('consent') ||
-            checkboxLabel.includes('confirm') ||
-            checkboxLabel.includes('acknowledge')
-          );
-
-        // Special handling for "I currently work here" checkbox
         const isCurrentlyWorkHereCheckbox =
           checkboxLabel.includes('currently work here') ||
           checkboxLabel.includes('current position') ||
           checkboxLabel.includes('present employer') ||
           checkboxLabel.includes('still working');
 
-        // For "currently work here", check if the experience entry is current (ends with Present)
         let shouldCheckCurrentWork = false;
         if (isCurrentlyWorkHereCheckbox && personals?.experience_details) {
-          // Get entry index from label context if available, e.g., "[Entry: 1]"
-          const entryMatch = checkboxLabel.match(/entry[:\s]*(\d+)/i);
-          const entryIndex = entryMatch ? parseInt(entryMatch[1], 10) - 1 : 0;
+          const entryIndex = this.extractEntryIndex(checkboxLabel) ?? 0;
           const experience = personals.experience_details[entryIndex];
           if (experience) {
             const endDate = (experience.to || '').toString().toLowerCase().trim();
-            // Only explicit present markers — empty to must NOT imply current job
             if (endDate === 'present' || endDate === 'current' || endDate === 'ongoing') {
               shouldCheckCurrentWork = true;
-              printLog(`✓ Entry ${entryIndex + 1} is current position (to: "${experience.to}"), will check "currently work here"`);
+              printLog(`Entry ${entryIndex + 1} is current position`);
             }
           }
         }
 
-        // For checkboxes, check if value matches positive responses OR if it's a terms checkbox
-        const checkValue = value.toLowerCase().trim();
-        const shouldCheck = isTermsCheckbox || shouldCheckCurrentWork ||
-          checkValue === 'yes' || checkValue === 'true' ||
-          checkValue === '1' || checkValue === 'on' ||
-          checkValue === 'checked' || checkValue === 'agree' ||
-          checkValue === 'accept';
+        const action = checkboxAction({
+          label: checkboxLabel,
+          answer: value,
+          currentlyWorkHere: shouldCheckCurrentWork,
+          autoAcceptTerms: this.autoAcceptTerms,
+        });
 
-        printLog(`Checkbox: label = "${checkboxLabel.substring(0, 50)}...", isTerms = ${isTermsCheckbox}, value = "${value}", shouldCheck = ${shouldCheck} `);
-        if (shouldCheck) {
+        printLog(`Checkbox: "${checkboxLabel.substring(0, 50)}..." action=${action}`);
+        if (action === 'check') {
           const tagNameLower = element.tagName.toLowerCase();
           if (tagNameLower === 'spl-checkbox') {
-            // SmartRecruiters custom checkbox - set value attribute and click
             element.setAttribute('value', 'true');
             element.setAttribute('checked', '');
-            element.click(); // Trigger the component's internal click handler
+            element.click();
             element.dispatchEvent(new Event('change', { bubbles: true }));
-            printLog(`✓ Checked spl-checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''} `);
           } else {
             const checkbox = input as HTMLInputElement;
             checkbox.checked = true;
             checkbox.dispatchEvent(new Event('change', { bubbles: true }));
             checkbox.dispatchEvent(new Event('click', { bubbles: true }));
             checkbox.dispatchEvent(new Event('input', { bubbles: true }));
-            printLog(`✓ Checked checkbox${isTermsCheckbox ? ' (auto-checked terms/conditions)' : ''} `);
           }
-        } else if (isCurrentlyWorkHereCheckbox && (input as HTMLInputElement).checked) {
-          // Profile says this entry has ended — clear a pre-checked box so the
-          // real end date gets filled instead of being skipped by
-          // shouldSkipWorkdayEndDate's "currently work here" DOM fallback.
+          markApplied();
+        } else if (action === 'uncheck') {
           const checkbox = input as HTMLInputElement;
-          checkbox.checked = false;
-          checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-          checkbox.dispatchEvent(new Event('click', { bubbles: true }));
-          checkbox.dispatchEvent(new Event('input', { bubbles: true }));
-          printLog(`✓ Unchecked "currently work here" (profile entry has an end date)`);
+          if (checkbox.checked) {
+            checkbox.checked = false;
+            checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            checkbox.dispatchEvent(new Event('click', { bubbles: true }));
+            checkbox.dispatchEvent(new Event('input', { bubbles: true }));
+            markApplied();
+          }
         }
         break;
+      }
 
       case 'spl-radio-group':
         // Handle SmartRecruiters spl-radio-group element
@@ -2425,6 +2468,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           const isMatch =
             labelLower === targetValueLower ||
             radioValue === value ||
+            textualMatch(value, radioLabel) ||
+            textualMatch(value, radioValue) ||
             (targetValueLower === 'yes' && (labelLower === 'yes' || radioValue === '1' || radioValue === 'true')) ||
             (targetValueLower === 'no' && (labelLower === 'no' || radioValue === '0' || radioValue === 'false'));
 
@@ -2435,6 +2480,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             radio.dispatchEvent(new Event('change', { bubbles: true }));
             printLog(`✓ Selected spl-radio-group option: "${radioLabel}"`);
             foundSplRadio = true;
+            markApplied();
           }
         });
 
@@ -2463,7 +2509,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             element.click();
             element.dispatchEvent(new Event('change', { bubbles: true }));
             printLog(`✓ Selected spl-radio: "${optionText}"`);
-            return; // Done for this element
+            markApplied();
+            break;
           }
           // If strictly no match, we just don't click it. 
           // Since we iterate all radios, the correct one will be clicked eventually.
@@ -2496,6 +2543,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               radio.dispatchEvent(new Event('input', { bubbles: true }));
               printLog(`✓ Selected radio option ${idx} (exact): "${radioLabel}"`);
               foundRadio = true;
+              markApplied();
               return;
             }
 
@@ -2508,6 +2556,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               radio.dispatchEvent(new Event('input', { bubbles: true }));
               printLog(`✓ Selected radio option ${idx} (partial): "${radioLabel}"`);
               foundRadio = true;
+              markApplied();
               return;
             }
 
@@ -2519,6 +2568,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               radio.dispatchEvent(new Event('input', { bubbles: true }));
               printLog(`✓ Selected radio option ${idx} (value match): "${radioLabel}"`);
               foundRadio = true;
+              markApplied();
             }
           });
 
@@ -2531,6 +2581,10 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       case 'select-one':
       case 'select':
         const select = input as HTMLSelectElement;
+        if (isNoAnswer(value)) {
+          printLog(`Select left unchanged — answer is empty/N/A`);
+          break;
+        }
         printLog(`Setting select value to: ${value}, has ${select.options.length} options`);
 
         // Try to find matching option (case insensitive, partial match)
@@ -2616,70 +2670,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             this.simulateTabCommit(select);
           }
           printLog(`✓ Set select to option ${matchingOptionIndex}: ${select.options[matchingOptionIndex].text} `);
+          markApplied();
         } else {
-          // Smart fallback: Check if this is a Yes/No question
-          const optionsArr = Array.from(select.options);
-          const hasYesOption = optionsArr.some((o: HTMLOptionElement) => o.text.toLowerCase().trim() === 'yes');
-          const hasNoOption = optionsArr.some((o: HTMLOptionElement) => o.text.toLowerCase().trim() === 'no');
-          const isYesNoQuestion = hasYesOption && hasNoOption;
-
-          // Get the question text to determine appropriate default
-          const questionText = this.extractQuestion(element).toLowerCase();
-
-          if (isYesNoQuestion) {
-            // For positive questions (willing, comfortable, agree, etc), default to Yes
-            const positiveKeywords = ['willing', 'comfortable', 'agree', 'able', 'can you', 'do you', 'have you', 'are you'];
-            const negativeKeywords = ['disability', 'conflict', 'legal issue', 'criminal', 'terminated', 'fired', 'sponsor', 'require visa', 'require sponsorship', 'visa sponsorship'];
-
-            const isPositiveQuestion = positiveKeywords.some(kw => questionText.includes(kw));
-            const isNegativeQuestion = negativeKeywords.some(kw => questionText.includes(kw));
-
-            let defaultAnswer = 'yes'; // Default to Yes for most questions
-            if (isNegativeQuestion) {
-              defaultAnswer = 'no';
-            }
-
-            const targetIndex = optionsArr.findIndex((o: HTMLOptionElement) => o.text.toLowerCase().trim() === defaultAnswer);
-            if (targetIndex >= 0) {
-              select.selectedIndex = targetIndex;
-              select.options[targetIndex].selected = true;
-              select.dispatchEvent(new Event('change', { bubbles: true }));
-              select.dispatchEvent(new Event('input', { bubbles: true }));
-              if (isWorkdayDomain()) {
-                this.simulateTabCommit(select);
-              }
-              printLog(`⚠ N/A returned but Yes/No detected. Auto-selected: ${defaultAnswer.toUpperCase()} (question: ${isPositiveQuestion ? 'positive' : isNegativeQuestion ? 'negative' : 'neutral'})`);
-            }
-          } else if (this.isSensitiveField(questionText)) {
-            // Never blind-guess race/veteran/disability/gender/etc — selecting
-            // "the first option" here means fabricating a protected-status
-            // answer with zero signal behind it. Leave unselected instead.
-            printLog(`⚠ Sensitive field "${questionText}" — no confident match, leaving unselected`);
-          } else {
-            // For non-Yes/No questions, try to select first non-placeholder option
-            let fallbackIndex = -1;
-            for (let i = 0; i < optionsArr.length; i++) {
-              const opt = optionsArr[i];
-              const optText = opt.text.toLowerCase().trim();
-              // Skip placeholder options
-              if (optText && !optText.includes('select') && !optText.includes('choose') && !optText.includes('--')) {
-                fallbackIndex = i;
-                break;
-              }
-            }
-            if (fallbackIndex >= 0) {
-              select.selectedIndex = fallbackIndex;
-              select.options[fallbackIndex].selected = true;
-              select.dispatchEvent(new Event('change', { bubbles: true }));
-              select.dispatchEvent(new Event('input', { bubbles: true }));
-              if (isWorkdayDomain()) {
-                this.simulateTabCommit(select);
-              }
-              printLog(`⚠ No match for "${value}", auto-selected first valid option: ${select.options[fallbackIndex].text}`);
-            } else {
-              printLog(`⚠ No matching option found for value: ${value} `);
-            }
-          }
+          printLog(`No matching option for "${value}" — leaving select unchanged`);
         }
         break;
 
@@ -2717,6 +2710,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             option.selected = true;
             selectedCount++;
             printLog(`✓ Selected multi - select option ${idx}: "${option.text}"`);
+            markApplied();
           }
         });
 
@@ -2823,6 +2817,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             this.simulateTabCommit(input as HTMLElement);
           }
           printLog(`✓ Clicked ${type} option: ${bestMatch.textContent} `);
+          markApplied();
         } else {
           // Fallback: If no option matches, scrape visible options and ASK LLM AGAIN
           // This is critical for listboxes where options are dynamic/unknown initially
@@ -2844,9 +2839,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
               }
             });
 
-            if (visibleOptions.length > 0) {
-              // Get new answer from LLM with specific options
-              const question = this.extractQuestion(input); // Re-extract question
+            if (visibleOptions.length > 0 && allowPerFieldLlm) {
+              const question = this.extractQuestion(input);
               const userInfo = personals.user_information_all || JSON.stringify(personals);
               const newAnswer = await llmManager.getAnswer(
                 question,
@@ -2914,7 +2908,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
                       this.simulateTabCommit(input as HTMLElement);
                     }
                     printLog(`✓ Clicked ${type} option(after re - ask): ${newBestMatch.textContent} `);
-                    return; // Success!
+                    markApplied();
+                    break;
                   }
                 }
               }
@@ -2923,42 +2918,30 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
           // If fallback failed, try typing (only for combobox inputs)
           if (type === 'combobox' && input instanceof HTMLInputElement) {
-            printLog(`⚠ No combobox option found for "${value}".Trying to type it...`);
+            printLog(`⚠ No combobox option found for "${value}". Typing without Enter (avoid form submit)...`);
             if (isWorkdayDomain()) {
               this.setReactInputValue(input, value);
-              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
               this.simulateTabCommit(input);
             } else {
               input.value = value;
               input.dispatchEvent(new Event('input', { bubbles: true }));
               input.dispatchEvent(new Event('change', { bubbles: true }));
-              input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+              input.dispatchEvent(new Event('blur', { bubbles: true }));
             }
+            markApplied();
           } else {
-            printLog(`⚠ No option found for ${type} "${value}" even after re - asking.`);
+            printLog(`⚠ No option found for ${type} "${value}".`);
           }
         }
         break;
 
 
       case 'ui5-date':
-        // Handle UI5 Date Picker
-        // Convert to MM/DD/YYYY if possible (standard US format often required by these widgets)
-        // Try to respect format-pattern if present
-        let dateValue = value;
-        const formatPattern = element.getAttribute('format-pattern') || 'MM/dd/yyyy'; // Default to US format usually
+        // Handle UI5 Date Picker — honor format-pattern when the value is ISO-like.
+        const formatPattern = element.getAttribute('format-pattern') || 'MM/dd/yyyy';
+        const dateValue = formatUi5Date(value, formatPattern);
 
-        // If value is YYYY-MM (from our persona), and format is MM/dd/yyyy
-        if (value.match(/^\d{4}-\d{2}$/)) {
-          const parts = value.split('-');
-          // Default to 1st of the month
-          dateValue = `${parts[1]}/01/${parts[0]}`;
-        } else if (value.match(/^\d{4}-\d{2}-\d{2}$/)) { // YYYY-MM-DD
-          const parts = value.split('-');
-          dateValue = `${parts[1]}/${parts[2]}/${parts[0]}`;
-        }
-
-        printLog(`Setting UI5 Date Picker value to: ${dateValue}`);
+        printLog(`Setting UI5 Date Picker value to: ${dateValue} (pattern: ${formatPattern})`);
 
         // Try setting value property
         if ('value' in element) {
@@ -2970,6 +2953,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         // Dispatch events to trigger internal logic
         element.dispatchEvent(new Event('input', { bubbles: true }));
         element.dispatchEvent(new Event('change', { bubbles: true }));
+        markApplied();
         break;
 
       default:
@@ -2982,6 +2966,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
           }
+          markApplied();
         } else if (input.tagName.toLowerCase().startsWith('spl-')) {
           // Handle spl-* Custom Elements
           printLog(`Setting value for custom element ${input.tagName}`);
@@ -3002,18 +2987,14 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           };
 
           if (input.tagName.toLowerCase() === 'spl-phone-field') {
-            // For phone field, it might pass complex object. 
-            // But usually typing works? Text value is safest safe-bet.
-            // Try setting attribute and property.
-            (input as any).value = value;
-            input.setAttribute('value', value);
-
-            // Try shadow
-            setShadowValue(input, value);
+            const phone = normalizePhone(value);
+            (input as any).value = phone;
+            input.setAttribute('value', phone);
+            setShadowValue(input, phone);
           } else {
             // spl-input, spl-textarea
             // 1. Try Shadow DOM first (most reliable for interactions)
-            const shadowSet = setShadowValue(input, value);
+            setShadowValue(input, value);
 
             // 2. Always set on host as well (for binding)
             (input as any).value = value;
@@ -3023,9 +3004,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
           input.dispatchEvent(new Event('blur', { bubbles: true }));
+          markApplied();
         }
         break;
     }
+    return applied;
   }
 
   // Helper to parse various date formats to ISO (yyyy-mm-dd)
@@ -3071,22 +3054,15 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
     }
 
-    // Fallback: JavaScript's native Date parsing (timezone-safe via local getters)
-    const nativeDate = new Date(trimmed);
-    if (!isNaN(nativeDate.getTime())) {
-      const y = nativeDate.getFullYear();
-      const mo = String(nativeDate.getMonth() + 1).padStart(2, '0');
-      const d = String(nativeDate.getDate()).padStart(2, '0');
-      return `${y}-${mo}-${d}`;
-    }
-
     return null;
   }
 
-  private async getSettings(): Promise<any> {
+  private async getSettings(): Promise<Record<string, unknown>> {
     return new Promise((resolve) => {
-      chrome.storage.sync.get(['settings'], (result) => {
-        resolve(result.settings || {});
+      chrome.storage.local.get(['settings'], (localResult) => {
+        chrome.storage.sync.get(['settings'], (syncResult) => {
+          resolve({ ...(syncResult.settings || {}), ...(localResult.settings || {}) });
+        });
       });
     });
   }
@@ -3113,11 +3089,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       return false;
     };
 
-    const shadowHosts = document.querySelectorAll('sr-screening-questions-form, oc-screening-questions-form');
-    for (const host of Array.from(shadowHosts)) {
-      if (host.shadowRoot && hasInShadow(host.shadowRoot)) {
-        return true;
-      }
+    const allCustom = document.querySelectorAll('*');
+    for (let i = 0; i < allCustom.length; i++) {
+      const host = allCustom[i];
+      if (!host.tagName.includes('-') || !host.shadowRoot) continue;
+      if (hasInShadow(host.shadowRoot)) return true;
     }
     return false;
   }
@@ -3145,7 +3121,8 @@ __w.getFormFillerStatus = () => (__w.__formAutopilotFormFiller as FormFiller).ge
 
 if (!__w.__formAutopilotListenerBound) {
   __w.__formAutopilotListenerBound = true;
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (sender.id && sender.id !== chrome.runtime.id) return false;
     const filler = __w.__formAutopilotFormFiller as FormFiller | undefined;
     if (!filler) return false;
 

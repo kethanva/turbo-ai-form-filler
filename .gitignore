@@ -33,7 +33,13 @@ test_plan.md
 # Local analysis artifacts (may contain paths / profile snippets)
 graphify-out/
 competitor_analysis/
+
+# Internal agent notes (local only, never published)
 CLAUDE.md
+AGENTS.md
+plan.md
+spec.md
+memory.md
 
 # Source maps (expose internal structure)
 dist/**/*.map

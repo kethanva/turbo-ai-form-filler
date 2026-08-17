@@ -111,7 +111,7 @@ For development with auto-rebuild:
 npm run watch
 ```
 
-This watches for TypeScript changes and rebuilds automatically.
+This watches TypeScript and re-bundles `dist/*.bundle.js` (what Chrome actually loads). Reload the extension after a rebuild.
 
 ### Custom Chrome Flags
 

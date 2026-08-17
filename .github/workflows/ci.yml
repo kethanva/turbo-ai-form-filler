@@ -22,6 +22,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test
+        run: npm test
+
       - name: Build
         run: npm run build
 
@@ -32,3 +35,11 @@ jobs:
           test -f dist/options.bundle.js  || (echo "Missing options.bundle.js"  && exit 1)
           test -f dist/background.js      || (echo "Missing background.js"      && exit 1)
           echo "✅ All dist files present"
+
+      - name: Guard content bundle against key material
+        run: |
+          if grep -E 'gsk_[A-Za-z0-9]{8,}|Authorization.: .Bearer' dist/content.bundle.js; then
+            echo "Content bundle must not contain API keys or Bearer headers"
+            exit 1
+          fi
+          echo "✅ Content bundle has no key material"

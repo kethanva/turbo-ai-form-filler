@@ -1,10 +1,7 @@
 // Background service worker
 import { loadSecrets, Secrets } from './modules/config_loader.js';
-
-const ALLOWED_FETCH_HOSTS = new Set([
-  'api.groq.com',
-  'router.huggingface.co',
-]);
+import { MAX_LLM_REQUESTS_PER_FILL, SCHEMA_VERSION } from './modules/fill_policy.js';
+import { isAllowedProviderUrl, sanitizeLlmRequestBody } from './modules/provider_guard.js';
 
 const CONTENT_SCRIPT_FILE = 'dist/content.bundle.js';
 
@@ -19,18 +16,6 @@ const BUNDLED_CONFIG_FILES = new Set([
   'questions.json',
 ]);
 
-function isAllowedProviderUrl(rawUrl: unknown): boolean {
-  if (typeof rawUrl !== 'string' || !rawUrl) return false;
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== 'https:') return false;
-    return ALLOWED_FETCH_HOSTS.has(parsed.hostname);
-  } catch {
-    return false;
-  }
-}
-
-/** Resolve {url, key} for a provider name from secrets. Never exposed to content scripts. */
 function resolveProviderConfig(provider: unknown, secrets: Secrets): { url: string; key: string } | null {
   if (provider === 'groq') {
     return { url: secrets.groq_api_url, key: (secrets.groq_api_key || '').trim() };
@@ -57,7 +42,7 @@ async function loadBundledJson<T>(relativePath: string): Promise<T | null> {
  * repeatedly fetching package files from every frame.
  */
 async function seedDefaultConfigs(): Promise<void> {
-  const local = await chrome.storage.local.get(['personals', 'questions']);
+  const local = await chrome.storage.local.get(['personals', 'questions', 'secrets', 'schema_version']);
 
   const updatesLocal: Record<string, unknown> = {};
   if (!local.personals) {
@@ -70,13 +55,26 @@ async function seedDefaultConfigs(): Promise<void> {
     const questions = await loadBundledJson('config/questions.json');
     if (questions) updatesLocal.questions = questions;
   }
+
+  const storedVersion = Number(local.schema_version) || 0;
+  if (storedVersion < SCHEMA_VERSION) {
+    const sync = await chrome.storage.sync.get(['secrets']);
+    const syncSecrets = (sync.secrets || {}) as Record<string, unknown>;
+    const localSecrets = (local.secrets || {}) as Record<string, unknown>;
+    const mergedSecrets = { ...syncSecrets, ...localSecrets };
+    if (Object.keys(mergedSecrets).length > 0) {
+      updatesLocal.secrets = mergedSecrets;
+    }
+    updatesLocal.schema_version = SCHEMA_VERSION;
+    const stripped = { ...syncSecrets };
+    delete stripped.groq_api_key;
+    delete stripped.huggingface_api_key;
+    await chrome.storage.sync.set({ secrets: stripped });
+  }
+
   if (Object.keys(updatesLocal).length > 0) {
     await chrome.storage.local.set(updatesLocal);
   }
-
-  // Do not seed secrets into sync here. Keys come from Options (sync) and/or
-  // config/secrets.json via getURL. Seeding empty sync secrets caused "no key" failures
-  // after we scrubbed the local secrets file.
 }
 
 function sendToFrame<T>(
@@ -146,12 +144,112 @@ async function injectContentScripts(tabId: number): Promise<void> {
   }
 }
 
+const fillingTabs = new Map<number, number>();
+const llmRequestCounts = new Map<number, number>();
+const fillingStartedAt = new Map<number, number>();
+let fillGeneration = 0;
+const FILL_SESSION_TTL_MS = 10 * 60 * 1000;
+const LLM_FETCH_ATTEMPTS = 3;
+
+function fillSessionStorageKey(tabId: number): string {
+  return `fill_session_${tabId}`;
+}
+
+async function persistFillSession(tabId: number, token: number, count: number): Promise<void> {
+  try {
+    if (!chrome.storage?.session) return;
+    const startedAt = fillingStartedAt.get(tabId) ?? Date.now();
+    fillingStartedAt.set(tabId, startedAt);
+    await chrome.storage.session.set({
+      [fillSessionStorageKey(tabId)]: { token, count, startedAt },
+    });
+  } catch {
+    // session storage is unavailable in some test stubs
+  }
+}
+
+async function clearPersistedFillSession(tabId: number): Promise<void> {
+  fillingStartedAt.delete(tabId);
+  try {
+    if (!chrome.storage?.session) return;
+    await chrome.storage.session.remove(fillSessionStorageKey(tabId));
+  } catch {
+    // ignore
+  }
+}
+
+async function restoreFillSession(tabId: number): Promise<boolean> {
+  if (fillingTabs.has(tabId)) return true;
+  try {
+    if (!chrome.storage?.session) return false;
+    const key = fillSessionStorageKey(tabId);
+    const stored = await chrome.storage.session.get(key);
+    const rec = stored[key] as { token?: number; count?: number; startedAt?: number } | undefined;
+    if (!rec || typeof rec.token !== 'number' || typeof rec.startedAt !== 'number') return false;
+    if (Date.now() - rec.startedAt > FILL_SESSION_TTL_MS) {
+      await chrome.storage.session.remove(key);
+      return false;
+    }
+    fillingTabs.set(tabId, rec.token);
+    llmRequestCounts.set(tabId, rec.count || 0);
+    fillingStartedAt.set(tabId, rec.startedAt);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchProviderOnce(
+  url: string,
+  key: string,
+  body: unknown
+): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < LLM_FETCH_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        redirect: 'error',
+        credentials: 'omit',
+        signal: AbortSignal.timeout(30_000),
+      });
+      const text = await res.text();
+      const responseHeaders: Record<string, string> = {};
+      res.headers.forEach((val, headerKey) => { responseHeaders[headerKey] = val; });
+      return {
+        status: res.status,
+        statusText: res.statusText,
+        headers: responseHeaders,
+        body: text,
+      };
+    } catch (err) {
+      lastErr = err;
+      if (attempt < LLM_FETCH_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 /**
  * Inject into frames that need it, then start filling in every frame that has
  * forms. Aggregate filledCount across frames so a top-frame "0 fields" reply
  * can never erase a successful iframe fill.
  */
 async function startFillingInTab(tabId: number): Promise<{ success: boolean; filledCount: number; error?: string }> {
+  if (fillingTabs.has(tabId)) {
+    return { success: false, filledCount: 0, error: 'Fill already in progress on this tab' };
+  }
+  const token = ++fillGeneration;
+  fillingTabs.set(tabId, token);
+  llmRequestCounts.set(tabId, 0);
+  await persistFillSession(tabId, token, 0);
   try {
     await injectContentScripts(tabId);
 
@@ -197,6 +295,12 @@ async function startFillingInTab(tabId: number): Promise<{ success: boolean; fil
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, filledCount: 0, error: message };
+  } finally {
+    if (fillingTabs.get(tabId) === token) {
+      fillingTabs.delete(tabId);
+      llmRequestCounts.delete(tabId);
+      void clearPersistedFillSession(tabId);
+    }
   }
 }
 
@@ -253,7 +357,12 @@ chrome.commands.onCommand.addListener((command) => {
 
 // Note: chrome.action.onClicked does not fire when manifest declares `default_popup`.
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id && sender.id !== chrome.runtime.id) {
+    sendResponse({ error: 'blocked: unknown sender' });
+    return false;
+  }
+
   // Popup → background: start fill (injects into all frames on demand)
   if (message?.action === 'startFilling') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -324,7 +433,29 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   // header itself from secrets — the API key never crosses into the content
   // script's (page-adjacent, isolated-world) JS heap.
   if (message?.action === 'llmRequest') {
-    loadSecrets().then(async (secrets) => {
+    const tabId = sender.tab?.id;
+    if (typeof tabId !== 'number') {
+      sendResponse({ error: 'llmRequest blocked: no active fill session' });
+      return false;
+    }
+
+    void (async () => {
+      if (!(await restoreFillSession(tabId))) {
+        sendResponse({ error: 'llmRequest blocked: no active fill session' });
+        return;
+      }
+      const used = (llmRequestCounts.get(tabId) || 0) + 1;
+      llmRequestCounts.set(tabId, used);
+      const token = fillingTabs.get(tabId);
+      if (typeof token === 'number') {
+        void persistFillSession(tabId, token, used);
+      }
+      if (used > MAX_LLM_REQUESTS_PER_FILL) {
+        sendResponse({ error: 'llmRequest blocked: per-fill request cap reached' });
+        return;
+      }
+
+      const secrets = await loadSecrets();
       if (!secrets.use_AI) {
         sendResponse({ error: 'llmRequest blocked: AI is disabled in settings' });
         return;
@@ -338,32 +469,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         sendResponse({ error: 'llmRequest blocked: no API key configured for this provider' });
         return;
       }
-      const body = message.body && typeof message.body === 'object' ? message.body : {};
+      const allowedModel = message.provider === 'huggingface' ? secrets.huggingface_model : secrets.groq_model;
+      const body = sanitizeLlmRequestBody(message.body, allowedModel);
+      if (!body) {
+        sendResponse({ error: 'llmRequest blocked: invalid request body' });
+        return;
+      }
       try {
-        const res = await fetch(cfg.url, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${cfg.key}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-          redirect: 'error',
-          credentials: 'omit',
-          signal: AbortSignal.timeout(30_000),
-        });
-        const text = await res.text();
-        const responseHeaders: Record<string, string> = {};
-        res.headers.forEach((val, key) => { responseHeaders[key] = val; });
-        sendResponse({
-          status: res.status,
-          statusText: res.statusText,
-          headers: responseHeaders,
-          body: text,
-        });
+        const result = await fetchProviderOnce(cfg.url, cfg.key, body);
+        sendResponse(result);
       } catch (err) {
         sendResponse({ error: err instanceof Error ? err.message : String(err) });
       }
-    });
+    })();
     return true;
   }
 

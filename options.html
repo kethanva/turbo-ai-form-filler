@@ -248,7 +248,19 @@
         <label>
           <input type="checkbox" id="chunkMode" checked> Smart Chunking
         </label>
-        <div class="help-text">Process fields in groups to prevent AI errors on large forms.</div>
+        <div class="help-text">Process fields in groups of 10. Large forms are always chunked.</div>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="autoAcceptTerms"> Auto-accept terms checkboxes
+        </label>
+        <div class="help-text">Off by default. When off, terms/privacy boxes are only checked if the answer is yes.</div>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="debugLogging"> Verbose debug logs
+        </label>
+        <div class="help-text">When off, answers and extra PII are not printed to the page console.</div>
       </div>
     </div>
 
@@ -256,9 +268,10 @@
       <h3>Groq API (Primary)</h3>
       <div class="form-group">
         <label for="groqApiKey">API Key</label>
-        <input type="text" id="groqApiKey" placeholder="gsk_...">
-        <div class="help-text">Get your API key from <a href="https://console.groq.com/keys" target="_blank">Groq
-            Console</a>. <b>Ultra-Economical:</b> typically costs only <b>$0.1 / 10¢ / ~9₹ per month</b>.</div>
+        <input type="password" id="groqApiKey" autocomplete="off" placeholder="gsk_...">
+        <div class="help-text">Leave blank to keep the saved key. Get a key from <a href="https://console.groq.com/keys" target="_blank">Groq
+            Console</a>.</div>
+        <button type="button" class="btn-secondary" id="clearGroqKey" style="margin-top:8px">Remove Groq key</button>
       </div>
       <div class="form-group">
         <label for="groqModel">Model</label>
@@ -274,9 +287,10 @@
       <h3>HuggingFace API (Fallback)</h3>
       <div class="form-group">
         <label for="hfApiKey">API Key</label>
-        <input type="text" id="hfApiKey" placeholder="hf_...">
-        <div class="help-text">Get your FREE token from <a href="https://huggingface.co/settings/tokens"
+        <input type="password" id="hfApiKey" autocomplete="off" placeholder="hf_...">
+        <div class="help-text">Leave blank to keep the saved key. Get a token from <a href="https://huggingface.co/settings/tokens"
             target="_blank">HuggingFace Settings</a></div>
+        <button type="button" class="btn-secondary" id="clearHfKey" style="margin-top:8px">Remove HuggingFace key</button>
       </div>
       <div class="form-group">
         <label for="hfModel">Model</label>

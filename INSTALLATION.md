@@ -85,5 +85,5 @@ For development with auto-rebuild:
 npm run watch
 ```
 
-This will automatically rebuild when you make changes to TypeScript files.
+This runs `tsc --watch` and esbuild `--watch` together so `dist/*.bundle.js` (what Chrome loads) stays current. Reload the extension on `chrome://extensions` after a rebuild.
 

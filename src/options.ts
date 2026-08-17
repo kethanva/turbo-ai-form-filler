@@ -1,4 +1,5 @@
 // Options page for settings - handles tabs, JSON editors, and Chrome storage
+import { isAllowedProviderUrl } from './modules/provider_guard.js';
 
 // ============ DEFAULTS (loaded from bundled JSON files) ============
 type JsonRecord = Record<string, unknown>;
@@ -107,26 +108,34 @@ async function loadSettings(): Promise<void> {
   await loadDefaults();
 
   // Load API settings from sync storage (small)
-  chrome.storage.sync.get(['secrets', 'settings'], (syncResult) => {
-    const secrets = syncResult.secrets || {};
-    const settings = syncResult.settings || {};
+  chrome.storage.local.get(['secrets', 'settings'], (localResult) => {
+    chrome.storage.sync.get(['secrets', 'settings'], (syncResult) => {
+      const secrets = { ...(syncResult.secrets || {}), ...(localResult.secrets || {}) };
+      const settings = { ...(syncResult.settings || {}), ...(localResult.settings || {}) };
 
-    // API Keys tab
-    (document.getElementById('useAI') as HTMLInputElement).checked = secrets.use_AI !== false;
-    (document.getElementById('batchMode') as HTMLInputElement).checked = settings.batch_mode !== false;
-    (document.getElementById('chunkMode') as HTMLInputElement).checked = settings.chunk_mode !== false;
+      (document.getElementById('useAI') as HTMLInputElement).checked = secrets.use_AI !== false;
+      (document.getElementById('batchMode') as HTMLInputElement).checked = settings.batch_mode !== false;
+      (document.getElementById('chunkMode') as HTMLInputElement).checked = settings.chunk_mode !== false;
+      (document.getElementById('autoAcceptTerms') as HTMLInputElement).checked = settings.auto_accept_terms === true;
+      (document.getElementById('debugLogging') as HTMLInputElement).checked = settings.debug_logging === true;
 
-    const chunkModeContainer = document.getElementById('chunkModeContainer');
-    if (chunkModeContainer) {
-      chunkModeContainer.style.display = (settings.batch_mode !== false) ? 'block' : 'none';
-    }
+      const chunkModeContainer = document.getElementById('chunkModeContainer');
+      if (chunkModeContainer) {
+        chunkModeContainer.style.display = (settings.batch_mode !== false) ? 'block' : 'none';
+      }
 
-    (document.getElementById('groqApiKey') as HTMLInputElement).value = secrets.groq_api_key || '';
-    (document.getElementById('groqModel') as HTMLInputElement).value = secrets.groq_model || 'llama-3.1-8b-instant';
-    (document.getElementById('groqApiUrl') as HTMLInputElement).value = secrets.groq_api_url || 'https://api.groq.com/openai/v1/chat/completions';
-    (document.getElementById('hfApiKey') as HTMLInputElement).value = secrets.huggingface_api_key || '';
-    (document.getElementById('hfModel') as HTMLInputElement).value = secrets.huggingface_model || 'meta-llama/Llama-3.2-3B-Instruct';
-    (document.getElementById('hfApiUrl') as HTMLInputElement).value = secrets.huggingface_api_url || 'https://router.huggingface.co/v1/chat/completions';
+      const groqInput = document.getElementById('groqApiKey') as HTMLInputElement;
+      const hfInput = document.getElementById('hfApiKey') as HTMLInputElement;
+      groqInput.value = '';
+      hfInput.value = '';
+      groqInput.placeholder = secrets.groq_api_key ? '•••••••• saved — enter a new key to replace' : 'gsk_...';
+      hfInput.placeholder = secrets.huggingface_api_key ? '•••••••• saved — enter a new key to replace' : 'hf_...';
+
+      (document.getElementById('groqModel') as HTMLInputElement).value = secrets.groq_model || 'llama-3.1-8b-instant';
+      (document.getElementById('groqApiUrl') as HTMLInputElement).value = secrets.groq_api_url || 'https://api.groq.com/openai/v1/chat/completions';
+      (document.getElementById('hfModel') as HTMLInputElement).value = secrets.huggingface_model || 'meta-llama/Llama-3.2-3B-Instruct';
+      (document.getElementById('hfApiUrl') as HTMLInputElement).value = secrets.huggingface_api_url || 'https://router.huggingface.co/v1/chat/completions';
+    });
   });
 
   // Load large configs from local storage (no size limit)
@@ -149,8 +158,9 @@ async function loadSettings(): Promise<void> {
 function saveSecrets(): void {
   const groqKey = (document.getElementById('groqApiKey') as HTMLInputElement).value.trim();
   const hfKey = (document.getElementById('hfApiKey') as HTMLInputElement).value.trim();
+  const groqUrl = (document.getElementById('groqApiUrl') as HTMLInputElement).value.trim();
+  const hfUrl = (document.getElementById('hfApiUrl') as HTMLInputElement).value.trim();
 
-  // Validation — require known vendor prefixes when a key is provided
   const groqKeyPattern = /^gsk_[A-Za-z0-9]{20,}$/;
   const hfKeyPattern = /^hf_[A-Za-z0-9]{20,}$/;
 
@@ -162,41 +172,71 @@ function saveSecrets(): void {
     showStatus('secretsStatus', 'HuggingFace API Key must start with hf_ and be a valid key length.', true);
     return;
   }
+  if (groqUrl && !isAllowedProviderUrl(groqUrl)) {
+    showStatus('secretsStatus', 'Groq API URL must be https://api.groq.com/...', true);
+    return;
+  }
+  if (hfUrl && !isAllowedProviderUrl(hfUrl)) {
+    showStatus('secretsStatus', 'HuggingFace API URL must be https://router.huggingface.co/...', true);
+    return;
+  }
 
-  chrome.storage.sync.get(['secrets'], (result) => {
+  chrome.storage.local.get(['secrets'], (result) => {
     const existingSecrets = result.secrets || {};
     const updatedSecrets = { ...existingSecrets };
 
     updatedSecrets.use_AI = (document.getElementById('useAI') as HTMLInputElement).checked;
     updatedSecrets.groq_model = (document.getElementById('groqModel') as HTMLInputElement).value.trim();
-    updatedSecrets.groq_api_url = (document.getElementById('groqApiUrl') as HTMLInputElement).value.trim();
+    updatedSecrets.groq_api_url = groqUrl;
     updatedSecrets.huggingface_model = (document.getElementById('hfModel') as HTMLInputElement).value.trim();
-    updatedSecrets.huggingface_api_url = (document.getElementById('hfApiUrl') as HTMLInputElement).value.trim();
+    updatedSecrets.huggingface_api_url = hfUrl;
 
-    // Empty field means the user cleared the key — remove it so a stale/invalid
-    // key cannot silently persist in storage.
     if (groqKey) {
       updatedSecrets.groq_api_key = groqKey;
-    } else {
-      delete updatedSecrets.groq_api_key;
     }
     if (hfKey) {
       updatedSecrets.huggingface_api_key = hfKey;
-    } else {
-      delete updatedSecrets.huggingface_api_key;
     }
 
     const settings = {
       batch_mode: (document.getElementById('batchMode') as HTMLInputElement).checked,
-      chunk_mode: (document.getElementById('chunkMode') as HTMLInputElement).checked
+      chunk_mode: (document.getElementById('chunkMode') as HTMLInputElement).checked,
+      auto_accept_terms: (document.getElementById('autoAcceptTerms') as HTMLInputElement).checked,
+      debug_logging: (document.getElementById('debugLogging') as HTMLInputElement).checked,
     };
 
-    chrome.storage.sync.set({ secrets: updatedSecrets, settings }, () => {
+    chrome.storage.local.set({ secrets: updatedSecrets, settings }, () => {
       if (chrome.runtime.lastError) {
         showStatus('secretsStatus', `Error: ${chrome.runtime.lastError.message}`, true);
-      } else {
-        showStatus('secretsStatus', '✓ API settings saved!');
+        return;
       }
+      chrome.storage.sync.get(['secrets'], (syncResult) => {
+        const stripped = { ...(syncResult.secrets || {}) };
+        delete stripped.groq_api_key;
+        delete stripped.huggingface_api_key;
+        chrome.storage.sync.set({ secrets: stripped, settings });
+      });
+      showStatus('secretsStatus', '✓ API settings saved locally (not synced).');
+      (document.getElementById('groqApiKey') as HTMLInputElement).value = '';
+      (document.getElementById('hfApiKey') as HTMLInputElement).value = '';
+    });
+  });
+}
+
+function clearStoredKey(which: 'groq' | 'hf'): void {
+  chrome.storage.local.get(['secrets'], (result) => {
+    const updated = { ...(result.secrets || {}) };
+    if (which === 'groq') updated.groq_api_key = '';
+    else updated.huggingface_api_key = '';
+    chrome.storage.local.set({ secrets: updated }, () => {
+      chrome.storage.sync.get(['secrets'], (syncResult) => {
+        const stripped = { ...(syncResult.secrets || {}) };
+        if (which === 'groq') delete stripped.groq_api_key;
+        else delete stripped.huggingface_api_key;
+        chrome.storage.sync.set({ secrets: stripped });
+      });
+      showStatus('secretsStatus', which === 'groq' ? 'Groq key removed.' : 'HuggingFace key removed.');
+      loadSettings();
     });
   });
 }
@@ -286,6 +326,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Save buttons
   document.getElementById('saveSecrets')?.addEventListener('click', saveSecrets);
+  document.getElementById('clearGroqKey')?.addEventListener('click', () => clearStoredKey('groq'));
+  document.getElementById('clearHfKey')?.addEventListener('click', () => clearStoredKey('hf'));
   document.getElementById('saveProfile')?.addEventListener('click', saveProfile);
   document.getElementById('savePrompts')?.addEventListener('click', savePrompts);
 

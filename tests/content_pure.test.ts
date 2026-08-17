@@ -34,6 +34,11 @@ describe('parseDateToISO', () => {
   it('rejects an invalid calendar date', () => {
     expect(filler.parseDateToISO('13/45/2022')).toBeNull();
   });
+
+  it('does not use native Date() on a month name (must not invent a day)', () => {
+    expect(filler.parseDateToISO('March 2020')).toBeNull();
+    expect(filler.parseDateToISO('not a date')).toBeNull();
+  });
 });
 
 describe('formatProfileDate', () => {
@@ -67,6 +72,7 @@ describe('extractEntryIndex', () => {
 
   it('returns null when no entry marker is present', () => {
     expect(filler.extractEntryIndex('First Name')).toBeNull();
+    expect(filler.extractEntryIndex('re-entry 2')).toBeNull();
   });
 });
 

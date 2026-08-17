@@ -1,6 +1,13 @@
 // Converted from modules/helpers.py
+let debugLogging = false;
+
+export function setDebugLogging(enabled: boolean): void {
+  debugLogging = enabled;
+}
+
 export function printLog(message: string, ...args: any[]): void {
-  const formattedMessage = args.length > 0 
+  if (!debugLogging) return;
+  const formattedMessage = args.length > 0
     ? `${message} ${args.map(String).join(' ')}`
     : message;
   console.log(formattedMessage);
@@ -93,7 +100,7 @@ export function textualMatch(value: unknown, candidate: unknown): boolean {
  * content-script (page-adjacent) JS heap.
  */
 export async function callLLM(provider: 'groq' | 'huggingface', body: Record<string, unknown>): Promise<Response> {
-  return new Promise((resolve, reject) => {
+  const sendOnce = (): Promise<Response> => new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ action: 'llmRequest', provider, body }, (response) => {
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
@@ -108,8 +115,6 @@ export async function callLLM(provider: 'groq' | 'huggingface', body: Record<str
         return;
       }
 
-      // Reconstruct Response object. Null-body statuses (204/205/304) reject a
-      // body in the Response constructor, so pass null for those.
       const isNullBodyStatus = [204, 205, 304].includes(response.status);
       resolve(new Response(isNullBodyStatus ? null : response.body, {
         status: response.status,
@@ -118,4 +123,26 @@ export async function callLLM(provider: 'groq' | 'huggingface', body: Record<str
       }));
     });
   });
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await sendOnce();
+    } catch (err) {
+      lastError = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('blocked:')) throw err;
+      // Only retry SW/message delivery failures. Provider errors are already
+      // retried inside the background fetch and must not consume extra cap.
+      const swGone =
+        msg.includes('Receiving end does not exist') ||
+        msg.includes('No response from background') ||
+        msg.includes('Extension context invalidated');
+      if (!swGone || attempt === 2) {
+        throw err instanceof Error ? err : new Error(String(err));
+      }
+      await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }

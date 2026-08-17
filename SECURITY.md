@@ -13,10 +13,7 @@ Only the latest version of the extension is supported for security updates.
 
 We take the security of our users' data seriously. This extension handles sensitive information like profile data and API keys.
 
-If you discover a security vulnerability, please **do not open a public issue**. Instead, please report it via one of the following methods:
-
-1. **GitHub Security Advisory**: If you have a GitHub account, you can report a vulnerability privately through the "Security" tab of this repository.
-2. **Email**: (Optional) Add your email address here or instructions on how to reach you privately.
+If you discover a security vulnerability, please **do not open a public issue**. Instead, report it privately through **GitHub Security Advisory** (Security tab of this repository).
 
 ### What to include in your report:
 

@@ -21,8 +21,8 @@
   "homepage": "https://github.com/kethanva/turbo-ai-form-filler#readme",
   "scripts": {
     "build": "tsc && npm run bundle",
-    "bundle": "npx esbuild dist/content.js --bundle --outfile=dist/content.bundle.js --format=iife --platform=browser && npx esbuild dist/popup.js --bundle --outfile=dist/popup.bundle.js --format=iife --platform=browser && npx esbuild dist/options.js --bundle --outfile=dist/options.bundle.js --format=iife --platform=browser",
-    "watch": "tsc --watch",
+    "bundle": "esbuild dist/content.js --bundle --outfile=dist/content.bundle.js --format=iife --platform=browser && esbuild dist/popup.js --bundle --outfile=dist/popup.bundle.js --format=iife --platform=browser && esbuild dist/options.js --bundle --outfile=dist/options.bundle.js --format=iife --platform=browser",
+    "watch": "node scripts/watch.js",
     "clean": "rm -rf dist",
     "package": "node scripts/package.js",
     "test": "vitest run",
