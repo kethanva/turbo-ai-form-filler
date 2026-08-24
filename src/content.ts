@@ -38,6 +38,9 @@ const _hostname = window.location.hostname.toLowerCase();
 const _isWorkday = hostMatches(_hostname, 'workday.com') || hostMatches(_hostname, 'myworkday.com') || hostMatches(_hostname, 'myworkdayjobs.com');
 const _isLinkedIn = hostMatches(_hostname, 'linkedin.com');
 
+const WORKDAY_SECTION_REGEX =
+  /(Work\s+Experience|Professional\s+Experience|Employment\s+History|Work\s+History|Job\s+History|Employment\s+Record|Work\s+Record|Experience\s+Details|Employment\s+Details|Position\s+Details|Previous\s+Employment|Previous\s+Experience|Education\s+History|Educational\s+Background|Education\s+Details|Employment|Education|Position|Experience|Job|School)(?:\s+(?:History|Record|Details|Background|Experience))?\s+(\d+)/i;
+
 /**
  * Detect if current page is Workday (needs delays for bot detection evasion)
  */
@@ -1182,7 +1185,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
             const labelElement = document.getElementById(labelId);
             if (labelElement) {
               const labelText = this.getCleanLabelText(labelElement);
-              const workdayMatch = labelText.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+              const workdayMatch = labelText.match(WORKDAY_SECTION_REGEX);
               if (workdayMatch) {
                 rowText = labelText;
                 printLog(`Found Workday section via aria-labelledby: ${rowText}`);
@@ -1194,7 +1197,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           // Also check aria-label directly on the container (common in newer Workday UI)
           const ariaLabel = current.getAttribute('aria-label');
           if (ariaLabel) {
-            const workdayMatch = ariaLabel.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+            const workdayMatch = ariaLabel.match(WORKDAY_SECTION_REGEX);
             if (workdayMatch) {
               rowText = ariaLabel;
               printLog(`Found Workday section via aria-label: ${rowText}`);
@@ -1211,11 +1214,11 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
           for (let i = 0; i < 15 && current; i++) {
             const textContent = current.textContent || '';
 
-            // Workday patterns: "Work Experience 1", "Education 1", "Position 1", etc.
-            const workdayMatch = textContent.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+            // Workday patterns: "Work Experience 1", "Employment History 1", "Education 1", etc.
+            const workdayMatch = textContent.match(WORKDAY_SECTION_REGEX);
             if (workdayMatch && textContent.length < 100) { // Ensure it's a label, not full description
 
-              rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1"
+              rowText = workdayMatch[0].trim(); // e.g., "Work Experience 1" or "Employment History 1"
               printLog(`Found Workday section: ${rowText}`);
               break;
             }
@@ -1241,7 +1244,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         question += ` [Entry: ${entryNum}]`;
         printLog(`Context added: Entry ${entryNum} for field (Row number)`);
       } else {
-        match = rowText.match(/(Work Experience|Professional Experience|Education|Employment|Position|Job|School)\s+(\d+)/i);
+        match = rowText.match(WORKDAY_SECTION_REGEX);
         if (match) {
           const section = match[1];
           const entryNum = match[2];
@@ -1584,6 +1587,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     if (/\[position\s+entry:/i.test(question)) return false;
     return (
       q.includes('education') ||
+      q.includes('educational background') ||
+      q.includes('education history') ||
       q.includes('formfield-school') ||
       q.includes('formfield-degree') ||
       q.includes('formfield-fieldofstudy') ||
@@ -1604,6 +1609,9 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     return (
       q.includes('professional experience') ||
       q.includes('work experience') ||
+      q.includes('employment history') ||
+      q.includes('work history') ||
+      q.includes('job history') ||
       q.includes('formfield-jobtitle') ||
       q.includes('formfield-companyname') ||
       q.includes('formfield-roledescription') ||
@@ -1846,7 +1854,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
       }
 
       // Fill the element based on type
-      const applied = await this.setElementValue(element, type, answer, options, true);
+      const applied = await this.setElementValue(element, type, answer, options, true, enhancedQuestion);
       if (applied) {
         this.filledCount++;
         this.emitStatus();
@@ -1899,7 +1907,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         return;
       }
 
-      const applied = await this.setElementValue(element, type, answer, options, allowPerFieldLlm);
+      const applied = await this.setElementValue(element, type, answer, options, allowPerFieldLlm, enhancedQuestion);
       if (applied) {
         this.filledCount++;
         this.emitStatus();
@@ -2083,7 +2091,8 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
     type: string,
     value: string,
     options?: string[],
-    allowPerFieldLlm: boolean = true
+    allowPerFieldLlm: boolean = true,
+    questionText?: string
   ): Promise<boolean> {
     const input = element as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
     let applied = false;
@@ -2238,7 +2247,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
 
       case 'number':
         // Get question/placeholder to check if it's a donation/amount field
-        const numQuestion = this.extractQuestion(element).toLowerCase();
+        const numQuestion = (questionText || this.extractQuestion(element)).toLowerCase();
 
         // Parse and validate number, respect min/max. Never invent a default.
         const parsedNum = parseNumericAnswer(value, numQuestion);
@@ -2391,7 +2400,7 @@ IMPORTANT: Only respond with the corrected value, nothing else.`;
         break;
 
       case 'checkbox': {
-        const checkboxLabel = this.extractQuestion(element).toLowerCase();
+        const checkboxLabel = (questionText || this.extractQuestion(element)).toLowerCase();
         const isCurrentlyWorkHereCheckbox =
           checkboxLabel.includes('currently work here') ||
           checkboxLabel.includes('current position') ||

@@ -86,6 +86,17 @@ describe('isEducationSection / isExperienceSection', () => {
     expect(filler.isExperienceSection('Title [Position Entry: 1]')).toBe(true);
     expect(filler.isEducationSection('Title [Position Entry: 1]')).toBe(false);
   });
+
+  it('classifies Employment History and Work History as Experience', () => {
+    expect(filler.isExperienceSection('Employment History 1')).toBe(true);
+    expect(filler.isExperienceSection('Work History')).toBe(true);
+    expect(filler.isExperienceSection('Job History')).toBe(true);
+  });
+
+  it('classifies Educational Background and Education History as Education', () => {
+    expect(filler.isEducationSection('Educational Background')).toBe(true);
+    expect(filler.isEducationSection('Education History')).toBe(true);
+  });
 });
 
 describe('isSensitiveField', () => {
